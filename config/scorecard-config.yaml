@@ -1,0 +1,49 @@
+# Configuração do Scorecard Service
+rules:
+  # Personalizar regras existentes
+  - id: "RES-001"
+    enabled: true
+    weight: 15.0
+    severity: "error"
+  
+  - id: "RES-007"
+    enabled: false  # Desabilitar validação de HPA
+    
+  # Adicionar novas regras
+  - id: "RES-015"
+    name: "Pod Disruption Budget"
+    pillar: "resilience"
+    type: "boolean"
+    source: "K8s API"
+    severity: "warning"
+    weight: 6.0
+    applies_to: ["Deployment"]
+    description: "Deployment deve ter PodDisruptionBudget configurado"
+    remediation: "Crie PodDisruptionBudget para alta disponibilidade durante manutenção"
+
+# Thresholds de notificação
+notification_thresholds:
+  critical: 65.0
+  error: 75.0
+  warning: 85.0
+
+# Configurações de notificação
+notification_settings:
+  cooldown_minutes: 120  # 2 horas
+  batch: true
+  batch_interval: 30  # 30 minutos
+
+# Namespaces excluídos
+excluded_namespaces:
+  - "kube-system"
+  - "kube-public"
+  - "kube-node-lease"
+  - "datadog"
+  - "monitoring"
+
+# Configurações avançadas
+advanced:
+  store_history: true
+  max_history_per_resource: 20
+  enable_drift_detection: true
+  drift_detection_interval: 3600  # 1 hora
