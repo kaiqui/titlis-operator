@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "titlis.fullname" . }}
+  labels:
+    {{- include "titlis.labels" . | nindent 4 }} 
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ include "titlis.name" . }}
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  template:
+    metadata:
+      labels:
+        {{- include "titlis.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "titlis.serviceAccountName" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - containerPort: 8080
+              name: http-metrics
+          envFrom:
+            # Injeta automaticamente todas as chaves do Slack (SLACK_BOT_TOKEN, etc)
+            - secretRef:
+                name: titlis-slack-keys
+          env:
+            # Mapeamento manual das chaves do Datadog (Secret -> ENV)
+            - name: DD_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-datadog-keys
+                  key: api-key
+            - name: DD_APP_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-datadog-keys
+                  key: app-key
+            
+            # Envs padrão do seu Deployment
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: RECONCILE_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: RECONCILE_INTERVAL_SECONDS
+            - name: DEBOUNCE_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: DEBOUNCE_SECONDS
+            - name: DD_SECRET_NAME
+              value: "titlis-datadog-keys"
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
