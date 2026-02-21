@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-config" (include "titlis.fullname" .) | quote }}
+  labels:
+    app.kubernetes.io/name: {{ include "titlis.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+data:
+  RECONCILE_INTERVAL_SECONDS: "{{ default 300 .Values.operator.reconciliation.intervalSeconds }}"
+  DEBOUNCE_SECONDS: "{{ default 30 .Values.operator.reconciliation.debounceSeconds }}"
