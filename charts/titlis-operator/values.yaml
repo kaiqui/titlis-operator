@@ -1,0 +1,46 @@
+replicaCount: 1
+
+image:
+  repository: kailima/titlis-operator
+  tag: "latest"
+  pullPolicy: IfNotPresent
+
+namespace: titlis
+
+# Secrets and Datadog
+secrets:
+  datadogSecretName: titlis-datadog-keys # Secret must have api_key and app_key
+
+# Operator behavior
+operator:
+  reconciliation:
+    intervalSeconds: 300
+    debounceSeconds: 30
+  leaderElection: true
+
+resources:
+  requests:
+    cpu: "100m"
+    memory: "256Mi"
+  limits:
+    cpu: "500m"
+    memory: "512Mi"
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+leaderElection:
+  enabled: true
+  leaseName: titlis-operator-leader
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+# RBAC namespace scope (if you want to limit)
+rbac:
+  create: true
+  targetNamespace: ""
