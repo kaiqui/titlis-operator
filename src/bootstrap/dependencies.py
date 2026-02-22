@@ -1,3 +1,4 @@
+import os
 import logging
 from typing import Optional
 from functools import lru_cache
@@ -10,6 +11,7 @@ from src.application.services.slo_service import SLOService
 from src.application.services.slack_service import SlackNotificationService
 from src.domain.slack_models import NotificationSeverity, NotificationChannel, SlackMessageTemplate
 from src.application.services.scorecard_service import ScorecardService
+from src.application.services.slo_metrics_service import SLOMetricsService
 from src.utils.json_logger import configure_logging, get_logger
 
 
@@ -20,6 +22,131 @@ def init_logging():
     Inicialização leve de logging para Kubernetes.
     """
     configure_logging(logging.INFO)
+
+@lru_cache()
+def get_backstage_enricher():
+    """
+    Retorna BackstageEnricher se ENABLE_BACKSTAGE_ENRICHMENT=true e BACKSTAGE_URL configurada.
+    Retorna None silenciosamente caso contrário.
+    """
+    from src.infrastructure.backstage.enricher import BackstageEnricher
+
+    if not settings.enable_backstage_enrichment:
+        logger.info("Backstage enrichment desabilitado via feature flag")
+        return None
+
+    if not settings.backstage_url:
+        logger.warning("BACKSTAGE_URL não configurada — backstage enrichment desabilitado")
+        return None
+
+    enricher = BackstageEnricher(
+        backstage_url=settings.backstage_url,
+        token=settings.backstage_token,
+        cache_ttl_seconds=settings.backstage_cache_ttl_seconds,
+    )
+    logger.info(
+        "BackstageEnricher inicializado",
+        extra={"backstage_url": settings.backstage_url},
+    )
+    return enricher
+
+
+@lru_cache()
+def get_castai_cost_enricher():
+    """
+    Retorna CastaiCostEnricher se ENABLE_CASTAI_COST_ENRICHMENT=true e credenciais presentes.
+    """
+    from src.infrastructure.castai.cost_enricher import CastaiCostEnricher
+
+    if not settings.enable_castai_cost_enrichment:
+        logger.info("CAST AI cost enrichment desabilitado via feature flag")
+        return None
+
+    api_key = settings.castai_api_key
+    cluster_id = settings.castai_cluster_id
+
+    if not api_key or not cluster_id:
+        logger.warning(
+            "CASTAI_API_KEY ou CASTAI_CLUSTER_ID não configurados — cost enrichment desabilitado",
+            extra={"has_api_key": bool(api_key), "has_cluster_id": bool(cluster_id)},
+        )
+        return None
+
+    enricher = CastaiCostEnricher(
+        api_key=api_key,
+        cluster_id=cluster_id,
+        cache_ttl_seconds=settings.castai_cost_cache_ttl_seconds,
+    )
+    logger.info(
+        "CastaiCostEnricher inicializado",
+        extra={"cluster_id": cluster_id},
+    )
+    return enricher
+
+
+# Store e Enricher são singletons — um por processo
+from src.application.services.scorecard_enricher import ScorecardsStore, ScorecardEnricher
+
+_scorecard_store = ScorecardsStore()
+
+
+@lru_cache()
+def get_scorecard_store() -> ScorecardsStore:
+    return _scorecard_store
+
+
+@lru_cache()
+def get_scorecard_enricher() -> ScorecardEnricher:
+    return ScorecardEnricher(
+        store=get_scorecard_store(),
+        backstage_enricher=get_backstage_enricher(),
+        castai_enricher=get_castai_cost_enricher(),
+    )
+
+lru_cache()
+def get_slo_metrics_service() -> Optional[SLOMetricsService]:
+    """
+    Retorna instância singleton de SLOMetricsService.
+
+    Retorna None se o SLO controller estiver desabilitado ou
+    se as credenciais do Datadog não estiverem disponíveis,
+    garantindo que o controller nunca falhe por causa das métricas.
+    """
+    if not settings.enable_slo_controller:
+        logger.info("SLO controller desabilitado; SLOMetricsService não será inicializado")
+        return None
+
+    try:
+        api_key = settings.datadog_api_key
+        if not api_key:
+            logger.warning(
+                "DD_API_KEY não configurada; métricas SLO serão desabilitadas",
+            )
+            return None
+
+        # APP_ENV é a variável canônica de ambiente; fallback para DD_ENV ou "unknown"
+        env = (
+            os.environ.get("APP_ENV")
+            or os.environ.get("DD_ENV")
+            or "unknown"
+        )
+
+        service = SLOMetricsService(
+            api_key=api_key,
+            app_key=settings.datadog_app_key,
+            site=settings.datadog_site,
+            env=env,
+        )
+
+        logger.info(
+            "SLOMetricsService inicializado",
+            extra={"env": env, "site": settings.datadog_site},
+        )
+        return service
+
+    except Exception:
+        logger.exception("Erro ao inicializar SLOMetricsService; métricas serão desabilitadas")
+        return None
 
 @lru_cache()
 def get_status_writer():
