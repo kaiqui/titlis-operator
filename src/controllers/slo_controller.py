@@ -5,8 +5,9 @@ from pydantic import ValidationError
 
 from src.controllers.base import BaseController
 from src.domain.models import SLOConfigSpec, SLOType
-from src.bootstrap.dependencies import get_slo_service
+from src.bootstrap.dependencies import get_slo_service, get_slo_metrics_service
 from src.domain.slack_models import NotificationSeverity, NotificationChannel
+from src.application.services.slo_metrics_service import SLOAction, SLOErrorKind
 
 
 class SLOController(BaseController):
@@ -16,107 +17,104 @@ class SLOController(BaseController):
         
         super().__init__("slo")
         self.slo_service = get_slo_service()
+        self.metrics = get_slo_metrics_service()
     
     async def on_slo_config_change(self, body: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         context = self._get_resource_context(body)
         resource_name = context["resource_name"]
         resource_namespace = context["resource_namespace"]
-        event_type = kwargs.get('event_type', 'unknown')
-        
-        # Verifica se o namespace está na lista de exclusão
+        event_type = kwargs.get("event_type", "unknown")
+
         if self._is_namespace_excluded(resource_namespace):
             self.logger.debug(
                 f"Ignorando SLOConfig no namespace excluído: {resource_namespace}",
-                extra=context
+                extra=context,
             )
             return {"ignored": True, "reason": f"Namespace {resource_namespace} está na lista de exclusão"}
-        
+
         self.logger.info(
             "SLOConfig alterado",
             extra={
                 "resource_name": resource_name,
                 "resource_namespace": resource_namespace,
-                "action": event_type
-            }
+                "action": event_type,
+            },
         )
 
-        # Estrutura para acumular resultados
         result = {
-            "success": False, 
-            "action": "create_or_update", 
-            "slo_id": None, 
+            "success": False,
+            "action": "create_or_update",
+            "slo_id": None,
             "error": None,
             "validation_errors": [],
             "datadog_error": None,
             "spec": None,
-            "event_type": event_type
+            "event_type": event_type,
         }
 
         try:
-            # Parse da especificação
             spec_dict = body.get("spec", {}) or {}
             spec = SLOConfigSpec(**spec_dict)
             result["spec"] = spec
-            
-            # Realiza todas as validações primeiro
+
             validation_passed = True
-            
-            # Validação 1: service obrigatório
+
             if not spec.service:
-                error_msg = "spec.service é obrigatório"
-                result["validation_errors"].append(error_msg)
+                result["validation_errors"].append("spec.service é obrigatório")
                 validation_passed = False
-            
-            # Validação 2: SLOs métricos requerem app_framework OU numerator/denominator
+
             if spec.type == SLOType.METRIC:
                 has_app_framework = spec.app_framework is not None
                 has_numerator_denominator = spec.numerator and spec.denominator
-                
                 if not has_app_framework and not has_numerator_denominator:
-                    error_msg = "SLOs métricos requerem app_framework ou numerator e denominator"
-                    result["validation_errors"].append(error_msg)
+                    result["validation_errors"].append(
+                        "SLOs métricos requerem app_framework ou numerator e denominator"
+                    )
                     validation_passed = False
-            
-            # Validação 3: warning deve ser MAIOR que target (se fornecido)
+
             if spec.warning is not None and spec.warning <= spec.target:
-                error_msg = f"warning ({spec.warning}) deve ser MAIOR que target ({spec.target})"
-                result["validation_errors"].append(error_msg)
+                result["validation_errors"].append(
+                    f"warning ({spec.warning}) deve ser MAIOR que target ({spec.target})"
+                )
                 validation_passed = False
-            
-            # Validação 4: valores entre 0-100
+
             if not 0 <= spec.target <= 100:
-                error_msg = f"target ({spec.target}) deve estar entre 0 e 100"
-                result["validation_errors"].append(error_msg)
+                result["validation_errors"].append(
+                    f"target ({spec.target}) deve estar entre 0 e 100"
+                )
                 validation_passed = False
-            
+
             if spec.warning is not None and not 0 <= spec.warning <= 100:
-                error_msg = f"warning ({spec.warning}) deve estar entre 0 e 100"
-                result["validation_errors"].append(error_msg)
+                result["validation_errors"].append(
+                    f"warning ({spec.warning}) deve estar entre 0 e 100"
+                )
                 validation_passed = False
-            
-            # Validação 5: app_framework deve ser válido para o tipo
+
             if spec.app_framework and spec.type != SLOType.METRIC:
                 warning_msg = f"app_framework será ignorado para SLO do tipo {spec.type}"
                 self.logger.warning(warning_msg, extra=context)
-                result["validation_errors"].append(warning_msg)  # Apenas warning, não bloqueia
-            
-            # Se houver erros de validação, interrompe aqui
+                result["validation_errors"].append(warning_msg)
+
             if not validation_passed and result["validation_errors"]:
                 self._update_status_with_error(
-                    body, 
-                    "; ".join([e for e in result["validation_errors"] if "será ignorado" not in e]), 
-                    context
+                    body,
+                    "; ".join([e for e in result["validation_errors"] if "será ignorado" not in e]),
+                    context,
                 )
-                # Envia notificação única de erro de validação
                 await self._send_complete_slo_notification(
-                    body=body,
+                    body=body, result=result, event_type=event_type, context=context
+                )
+
+                # ── Métrica: erro de validação ──────────────────────────────
+                self._emit_reconciliation_metric(
                     result=result,
-                    event_type=event_type,
-                    context=context
+                    spec=spec,
+                    namespace=resource_namespace,
+                    error_kind=SLOErrorKind.VALIDATION,
                 )
                 return result
-            
-            # Tenta reconciliar/criar o SLO no Datadog
+
+            # Reconciliação com Datadog
             try:
                 self.logger.info(
                     "Reconciliando SLO com Datadog",
@@ -124,61 +122,60 @@ class SLOController(BaseController):
                         "service": spec.service,
                         "type": spec.type.value,
                         "target": spec.target,
-                        "namespace": resource_namespace
-                    }
+                        "namespace": resource_namespace,
+                    },
                 )
-                
+
                 reconciliation_result = self.slo_service.reconcile_slo(
                     namespace=resource_namespace,
                     service=spec.service,
                     spec=spec,
                 ) or {}
-                
+
                 self.logger.debug(
                     "Resultado da reconciliação do SLO",
-                    extra={"result": reconciliation_result}
+                    extra={"result": reconciliation_result},
                 )
-                
-                # Atualiza resultado com dados da reconciliação
-                result.update({
-                    "success": bool(reconciliation_result.get("success")),
-                    "action": reconciliation_result.get("action") or "create_or_update",
-                    "slo_id": reconciliation_result.get("slo_id"),
-                    "datadog_error": reconciliation_result.get("error"),
-                    "reconciliation_result": reconciliation_result
-                })
-                
+
+                result.update(
+                    {
+                        "success": bool(reconciliation_result.get("success")),
+                        "action": reconciliation_result.get("action") or "create_or_update",
+                        "slo_id": reconciliation_result.get("slo_id"),
+                        "datadog_error": reconciliation_result.get("error"),
+                        "reconciliation_result": reconciliation_result,
+                    }
+                )
+
             except Exception as dd_exc:
                 err_msg = str(dd_exc)
                 self.logger.exception(
-                    "Erro ao criar/reconciliar SLO no Datadog", 
-                    extra={
-                        **context, 
-                        "exception": err_msg,
-                        "service": spec.service
+                    "Erro ao criar/reconciliar SLO no Datadog",
+                    extra={**context, "exception": err_msg, "service": spec.service},
+                )
+                result.update(
+                    {
+                        "success": False,
+                        "action": "create_or_update",
+                        "slo_id": None,
+                        "datadog_error": err_msg,
                     }
                 )
-                
-                result.update({
-                    "success": False,
-                    "action": "create_or_update",
-                    "slo_id": None,
-                    "datadog_error": err_msg,
-                })
-            
-            # Atualiza status do recurso
+
             status_payload = {
                 "slo_id": result["slo_id"],
                 "state": "ok" if result["success"] else "error",
                 "last_sync": datetime.now(timezone.utc).isoformat(),
                 "error": None if result["success"] else (result["datadog_error"] or "Erro desconhecido"),
             }
-            
-            if result["validation_errors"] and any("será ignorado" not in e for e in result["validation_errors"]):
+
+            if result["validation_errors"] and any(
+                "será ignorado" not in e for e in result["validation_errors"]
+            ):
                 status_payload["error"] = "; ".join(result["validation_errors"])
-            
+
             self._update_status(body, status_payload, context)
-            
+
         except ValidationError as ve:
             error_msg = f"Erro de validação: {ve}"
             self.logger.error(
@@ -186,49 +183,73 @@ class SLOController(BaseController):
                 extra={
                     **context,
                     "validation_error": str(ve),
-                    "validation_details": ve.errors() if hasattr(ve, 'errors') else None
-                }
+                    "validation_details": ve.errors() if hasattr(ve, "errors") else None,
+                },
             )
-            
-            result.update({
-                "error": error_msg,
-                "validation_errors": [f"Erro de schema: {ve}"]
-            })
-            
+            result.update({"error": error_msg, "validation_errors": [f"Erro de schema: {ve}"]})
             self._update_status_with_error(body, error_msg, context)
-            
+
+            # ── Métrica: erro de schema ──────────────────────────────────
+            self._emit_reconciliation_metric(
+                result=result,
+                spec=result.get("spec"),
+                namespace=resource_namespace,
+                error_kind=SLOErrorKind.VALIDATION,
+            )
+
         except Exception as exc:
             exc_msg = str(exc)
             self.logger.exception(
-                "Erro inesperado ao processar SLOConfig", 
-                extra={
-                    **context,
-                    "exception": exc_msg,
-                    "exception_type": type(exc).__name__
-                }
+                "Erro inesperado ao processar SLOConfig",
+                extra={**context, "exception": exc_msg, "exception_type": type(exc).__name__},
             )
-            
-            result.update({
-                "error": exc_msg,
-            })
-            
+            result.update({"error": exc_msg})
             self._update_status_with_error(body, exc_msg, context)
-        
-        # Envia uma única notificação completa
+
+            # ── Métrica: erro inesperado ─────────────────────────────────
+            self._emit_reconciliation_metric(
+                result=result,
+                spec=result.get("spec"),
+                namespace=resource_namespace,
+                error_kind=SLOErrorKind.UNEXPECTED,
+            )
+
+        # Notificação Slack (comportamento original mantido)
         await self._send_complete_slo_notification(
-            body=body,
-            result=result,
-            event_type=event_type,
-            context=context
+            body=body, result=result, event_type=event_type, context=context
         )
-        
-        # Retorna resultado para o handler
+
+        # ── Métrica: resultado final ───────────────────────────────────────
+        error_kind = SLOErrorKind.NONE
+        if not result["success"]:
+            if result.get("datadog_error"):
+                error_kind = SLOErrorKind.DATADOG_API
+            elif result.get("validation_errors"):
+                error_kind = SLOErrorKind.VALIDATION
+            else:
+                error_kind = SLOErrorKind.UNEXPECTED
+
+        self._emit_reconciliation_metric(
+            result=result,
+            spec=result.get("spec"),
+            namespace=resource_namespace,
+            error_kind=error_kind,
+        )
+
+        # ── Compliance / adesão ───────────────────────────────────────────
+        if result.get("spec") and self.metrics:
+            self.metrics.record_compliance_status(
+                is_compliant=result["success"],
+                slo_type=result["spec"].type.value if result.get("spec") else "unknown",
+                namespace=resource_namespace,
+            )
+
         return {
             "success": result["success"],
             "action": result["action"],
             "slo_id": result["slo_id"],
             "error": result["error"] or result["datadog_error"],
-            "service": result["spec"].service if result["spec"] else None
+            "service": result["spec"].service if result["spec"] else None,
         }
     
     async def _send_complete_slo_notification(
@@ -613,6 +634,39 @@ class SLOController(BaseController):
                 }
             )
 
+    def _emit_reconciliation_metric(
+        self,
+        *,
+        result: Dict[str, Any],
+        spec: Any,
+        namespace: str,
+        error_kind: SLOErrorKind,
+    ) -> None:
+        """
+        Emite métrica de reconciliação de forma centralizada.
+        Nunca propaga exceções — métricas são best-effort.
+        """
+        if not self.metrics:
+            return
+
+        # Converte action string → SLOAction enum (fail-safe)
+        action_str = (result.get("action") or "unknown").lower()
+        try:
+            action = SLOAction(action_str)
+        except ValueError:
+            action = SLOAction.UNKNOWN
+
+        slo_type = "unknown"
+        if spec and hasattr(spec, "type"):
+            slo_type = spec.type.value
+
+        self.metrics.record_reconciliation(
+            success=bool(result.get("success")),
+            action=action,
+            slo_type=slo_type,
+            namespace=namespace,
+            error_kind=error_kind,
+        )
 
 # Instância global do controller
 slo_controller = SLOController()
