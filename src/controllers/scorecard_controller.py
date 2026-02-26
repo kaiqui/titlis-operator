@@ -65,7 +65,7 @@ class ScorecardController(BaseController):
             
             # Remediação automática via GitHub PR (se habilitada)
             if self.remediation_service:
-                await self._maybe_create_remediation_pr(scorecard, ctx)
+                await self._maybe_create_remediation_pr(scorecard, ctx, body)
 
             # Verifica se deve enviar notificação
             should_notify = self.scorecard_service.should_notify(scorecard)
@@ -117,11 +117,16 @@ class ScorecardController(BaseController):
             return {"evaluated": False, "error": "Erro ao processar Deployment"}
     
     async def _maybe_create_remediation_pr(
-        self, scorecard: Any, ctx: Dict[str, Any]
+        self,
+        scorecard: Any,
+        ctx: Dict[str, Any],
+        resource_body: Dict[str, Any],
     ) -> None:
         """
         Se existirem issues remediáveis (HPA / resources), dispara a criação
         automática de uma branch + PR no GitHub e notifica o Slack.
+
+        Só executa se o Deployment tiver a env DD_GIT_REPOSITORY_URL.
         """
         remediable_issues: List[RemediationIssue] = []
 
@@ -145,8 +150,7 @@ class ScorecardController(BaseController):
             namespace=scorecard.resource_namespace,
             resource_kind=scorecard.resource_kind,
             issues=remediable_issues,
-            repo_owner=settings.github.repo_owner,
-            repo_name=settings.github.repo_name,
+            resource_body=resource_body,
             base_branch=settings.github.base_branch,
         )
 

@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import List
+from typing import List, Optional
 
 from src.domain.github_models import PullRequestResult, RemediationFile
 
@@ -23,6 +23,17 @@ class GitHubPort(ABC):
         base_branch: str,
     ) -> bool:
         """Cria uma nova branch a partir de uma branch base."""
+        pass
+
+    @abstractmethod
+    async def get_file_content(
+        self,
+        repo_owner: str,
+        repo_name: str,
+        file_path: str,
+        ref: str,
+    ) -> Optional[str]:
+        """Retorna o conteúdo de um arquivo como string, ou None se não encontrado."""
         pass
 
     @abstractmethod

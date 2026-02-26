@@ -2,26 +2,71 @@
 Testes unitários para RemediationService.
 
 Cobre:
-- Geração de arquivos de remediação (HPA e resources)
+- Verificação de pré-condição DD_GIT_REPOSITORY_URL
+- Extração e parse da URL do repositório
+- Coleta de métricas Datadog (com e sem dados)
+- Modificação precisa do deploy.yaml (resources e HPA)
 - Fluxo completo de criação do PR
 - Tratamento de erros em cada etapa
 - Notificação Slack após o PR
+- Valores sugeridos pelo DatadogProfilingMetrics
 """
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.application.services.remediation_service import (
     REMEDIABLE_RULE_IDS,
+    DEPLOY_YAML_PATH,
+    DD_GIT_REPO_ENV,
     RemediationService,
     _HPA_RULE_IDS,
     _RESOURCE_RULE_IDS,
 )
 from src.domain.github_models import (
+    DatadogProfilingMetrics,
     PullRequestResult,
     RemediationIssue,
     RemediationRequest,
     RemediationRuleCategory,
 )
+
+# ---------------------------------------------------------------------------
+# Body helper
+# ---------------------------------------------------------------------------
+
+def _make_body(dd_repo_url: str = "https://github.com/org/my-app") -> dict:
+    """Cria um body de Deployment K8s com DD_GIT_REPOSITORY_URL configurado."""
+    return {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {
+                            "name": "my-app",
+                            "env": [
+                                {"name": "OTHER_VAR", "value": "foo"},
+                                {"name": DD_GIT_REPO_ENV, "value": dd_repo_url},
+                            ],
+                        }
+                    ]
+                }
+            }
+        }
+    }
+
+
+def _make_body_without_dd_url() -> dict:
+    return {
+        "spec": {
+            "template": {
+                "spec": {
+                    "containers": [
+                        {"name": "my-app", "env": [{"name": "OTHER_VAR", "value": "bar"}]}
+                    ]
+                }
+            }
+        }
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -35,10 +80,15 @@ def mock_github_port():
     port.branch_exists.return_value = False
     port.create_branch.return_value = True
     port.commit_files.return_value = True
+    port.get_file_content.return_value = (
+        "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\n"
+        "spec:\n  template:\n    spec:\n      containers:\n"
+        "        - name: my-app\n          image: my-app:v1\n"
+    )
     port.create_pull_request.return_value = PullRequestResult(
         number=42,
-        title="fix(default/my-app): auto-remediação HPA e resources [2 issue(s)]",
-        url="https://github.com/org/repo/pull/42",
+        title="[IA] fix(default/my-app): RESOURCES — 2 issue(s)",
+        url="https://github.com/org/my-app/pull/42",
         branch="fix/auto-remediation-default-my-app-20240101000000",
         base_branch="develop",
     )
@@ -51,6 +101,16 @@ def mock_slack_service():
     svc.is_enabled.return_value = True
     svc.send_notification = AsyncMock(return_value=True)
     return svc
+
+
+@pytest.fixture
+def mock_datadog():
+    dd = MagicMock()
+    dd.get_container_metrics.return_value = DatadogProfilingMetrics(
+        cpu_avg_millicores=200,
+        memory_avg_mib=256,
+    )
+    return dd
 
 
 @pytest.fixture
@@ -80,17 +140,17 @@ def base_request(hpa_issue, resource_issue):
         namespace="default",
         resource_kind="Deployment",
         issues=[hpa_issue, resource_issue],
-        repo_owner="org",
-        repo_name="repo",
+        resource_body=_make_body(),
         base_branch="develop",
     )
 
 
 @pytest.fixture
-def service(mock_github_port, mock_slack_service):
+def service(mock_github_port, mock_slack_service, mock_datadog):
     return RemediationService(
         github_port=mock_github_port,
         slack_service=mock_slack_service,
+        datadog_repository=mock_datadog,
     )
 
 
@@ -124,147 +184,221 @@ class TestRemediableRuleIds:
 class TestRemediationIssueCategory:
     def test_hpa_issue_categoria_correta(self):
         issue = RemediationIssue(
-            rule_id="RES-007",
-            rule_name="HPA",
-            description="desc",
-            remediation="fix",
+            rule_id="RES-007", rule_name="HPA", description="d", remediation="f"
         )
         assert issue.category == RemediationRuleCategory.HPA
 
     def test_resource_issue_categoria_correta(self):
         issue = RemediationIssue(
-            rule_id="RES-003",
-            rule_name="CPU",
-            description="desc",
-            remediation="fix",
+            rule_id="RES-003", rule_name="CPU", description="d", remediation="f"
         )
         assert issue.category == RemediationRuleCategory.RESOURCES
 
 
 # ---------------------------------------------------------------------------
-# Testes de _generate_remediation_files
+# Testes de DatadogProfilingMetrics
 # ---------------------------------------------------------------------------
 
 
-class TestGenerateRemediationFiles:
-    def test_gera_arquivo_hpa_para_issue_hpa(self, service, hpa_issue):
-        request = RemediationRequest(
-            resource_name="app",
-            namespace="ns",
-            resource_kind="Deployment",
-            issues=[hpa_issue],
-            repo_owner="o",
-            repo_name="r",
-        )
-        files = service._generate_remediation_files(request)
-        assert len(files) == 1
-        assert "hpa" in files[0].path
+class TestDatadogProfilingMetrics:
+    def test_suggestions_com_dados(self):
+        m = DatadogProfilingMetrics(cpu_avg_millicores=200, memory_avg_mib=256)
+        assert m.suggest_cpu_request() == "240m"  # 200 * 1.2
+        assert m.suggest_cpu_limit() == "600m"    # 200 * 3
+        assert m.suggest_memory_request() == "307Mi"  # 256 * 1.2 ≈ 307
+        assert m.suggest_memory_limit() == "512Mi"   # 256 * 2
 
-    def test_gera_arquivo_resources_para_issue_resource(self, service, resource_issue):
-        request = RemediationRequest(
-            resource_name="app",
-            namespace="ns",
-            resource_kind="Deployment",
+    def test_suggestions_sem_dados_usa_padrao(self):
+        m = DatadogProfilingMetrics()
+        assert m.suggest_cpu_request() == "100m"
+        assert m.suggest_cpu_limit() == "500m"
+        assert m.suggest_memory_request() == "128Mi"
+        assert m.suggest_memory_limit() == "512Mi"
+
+    def test_minimo_cpu_request(self):
+        m = DatadogProfilingMetrics(cpu_avg_millicores=5)  # muito baixo
+        request = m.suggest_cpu_request()
+        assert request == "100m"  # mínimo garantido
+
+    def test_minimo_memory_request(self):
+        m = DatadogProfilingMetrics(memory_avg_mib=10)
+        request = m.suggest_memory_request()
+        assert request == "128Mi"  # mínimo garantido
+
+
+# ---------------------------------------------------------------------------
+# Testes de _extract_git_repo / _parse_github_url
+# ---------------------------------------------------------------------------
+
+
+class TestExtractGitRepo:
+    def test_extrai_owner_repo_de_url_https(self, service):
+        result = service._extract_git_repo(_make_body("https://github.com/org/my-app"))
+        assert result == ("org", "my-app")
+
+    def test_extrai_de_url_com_git_suffix(self, service):
+        result = service._extract_git_repo(
+            _make_body("https://github.com/org/my-app.git")
+        )
+        assert result == ("org", "my-app")
+
+    def test_retorna_none_sem_dd_git_url(self, service):
+        result = service._extract_git_repo(_make_body_without_dd_url())
+        assert result is None
+
+    def test_retorna_none_com_url_invalida(self, service):
+        result = service._extract_git_repo(
+            _make_body("https://gitlab.com/org/repo")
+        )
+        assert result is None
+
+    def test_parse_github_url_ssh(self):
+        result = RemediationService._parse_github_url("git@github.com:org/repo.git")
+        assert result == ("org", "repo")
+
+    def test_parse_github_url_trailing_slash(self):
+        result = RemediationService._parse_github_url("https://github.com/org/repo/")
+        assert result == ("org", "repo")
+
+
+# ---------------------------------------------------------------------------
+# Testes de _modify_deploy_yaml
+# ---------------------------------------------------------------------------
+
+
+_DEPLOY_YAML_WITH_RESOURCES = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+  namespace: default
+spec:
+  template:
+    spec:
+      containers:
+        - name: my-app
+          # imagem principal
+          image: my-app:v1
+          resources:
+            requests:
+              cpu: "50m"    # valor anterior
+              memory: "64Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+"""
+
+_DEPLOY_YAML_WITHOUT_RESOURCES = """\
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-app
+spec:
+  template:
+    spec:
+      containers:
+        - name: my-app
+          image: my-app:v1
+"""
+
+
+class TestModifyDeployYaml:
+    def test_modifica_resources_existentes(self, service):
+        metrics = DatadogProfilingMetrics(cpu_avg_millicores=200, memory_avg_mib=256)
+        resource_issue = RemediationIssue(
+            rule_id="RES-003", rule_name="CPU", description="d", remediation="f"
+        )
+        content, categories = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITH_RESOURCES,
             issues=[resource_issue],
-            repo_owner="o",
-            repo_name="r",
-        )
-        files = service._generate_remediation_files(request)
-        assert len(files) == 1
-        assert "resources-patch" in files[0].path
-
-    def test_gera_ambos_arquivos_para_ambas_issues(self, service, base_request):
-        files = service._generate_remediation_files(base_request)
-        assert len(files) == 2
-        paths = [f.path for f in files]
-        assert any("hpa" in p for p in paths)
-        assert any("resources-patch" in p for p in paths)
-
-    def test_retorna_lista_vazia_sem_issues_remediaveis(self, service):
-        request = RemediationRequest(
-            resource_name="app",
-            namespace="ns",
+            metrics=metrics,
+            resource_name="my-app",
+            namespace="default",
             resource_kind="Deployment",
-            issues=[
-                RemediationIssue(
-                    rule_id="SEC-001",
-                    rule_name="Imagem com Tag",
-                    description="Use tag específica",
-                    remediation="Não use latest",
-                )
-            ],
-            repo_owner="o",
-            repo_name="r",
         )
-        files = service._generate_remediation_files(request)
-        assert files == []
+        assert "resources" in categories
+        # Verifica os novos valores
+        assert "240m" in content  # cpu request
+        assert "600m" in content  # cpu limit
 
+    def test_adiciona_resources_quando_ausentes(self, service):
+        resource_issue = RemediationIssue(
+            rule_id="RES-003", rule_name="CPU", description="d", remediation="f"
+        )
+        content, categories = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITHOUT_RESOURCES,
+            issues=[resource_issue],
+            metrics=None,  # sem métricas — usa padrão
+            resource_name="my-app",
+            namespace="default",
+            resource_kind="Deployment",
+        )
+        assert "resources" in categories
+        assert "100m" in content  # cpu request padrão
 
-# ---------------------------------------------------------------------------
-# Testes de _generate_hpa_manifest
-# ---------------------------------------------------------------------------
+    def test_adiciona_hpa_quando_ausente(self, service):
+        hpa_issue = RemediationIssue(
+            rule_id="RES-007", rule_name="HPA", description="d", remediation="f"
+        )
+        content, categories = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITHOUT_RESOURCES,
+            issues=[hpa_issue],
+            metrics=None,
+            resource_name="my-app",
+            namespace="default",
+            resource_kind="Deployment",
+        )
+        assert "hpa-create" in categories
+        assert "HorizontalPodAutoscaler" in content
 
+    def test_hpa_e_resources_na_mesma_passagem(self, service):
+        hpa_issue = RemediationIssue(
+            rule_id="RES-007", rule_name="HPA", description="d", remediation="f"
+        )
+        res_issue = RemediationIssue(
+            rule_id="RES-003", rule_name="CPU", description="d", remediation="f"
+        )
+        content, categories = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITHOUT_RESOURCES,
+            issues=[hpa_issue, res_issue],
+            metrics=None,
+            resource_name="my-app",
+            namespace="default",
+            resource_kind="Deployment",
+        )
+        assert "resources" in categories
+        assert "hpa-create" in categories
+        assert "HorizontalPodAutoscaler" in content
 
-class TestGenerateHpaManifest:
-    def test_conteudo_yaml_valido(self, service, base_request):
-        import yaml
+    def test_retorna_vazio_sem_issues_remediaveis(self, service):
+        non_remediable = RemediationIssue(
+            rule_id="SEC-001", rule_name="Imagem", description="d", remediation="f"
+        )
+        content, categories = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITH_RESOURCES,
+            issues=[non_remediable],
+            metrics=None,
+            resource_name="my-app",
+            namespace="default",
+            resource_kind="Deployment",
+        )
+        assert content == ""
+        assert categories == []
 
-        f = service._generate_hpa_manifest(base_request)
-        manifest = yaml.safe_load(f.content)
-        assert manifest["kind"] == "HorizontalPodAutoscaler"
-        assert manifest["apiVersion"] == "autoscaling/v2"
-        assert manifest["spec"]["minReplicas"] == 2
-        assert manifest["spec"]["maxReplicas"] == 10
-        assert len(manifest["spec"]["metrics"]) == 2
-
-    def test_namespace_e_nome_corretos(self, service, base_request):
-        import yaml
-
-        f = service._generate_hpa_manifest(base_request)
-        manifest = yaml.safe_load(f.content)
-        assert manifest["metadata"]["name"] == base_request.resource_name
-        assert manifest["metadata"]["namespace"] == base_request.namespace
-
-    def test_path_inclui_namespace_e_nome(self, service, base_request):
-        f = service._generate_hpa_manifest(base_request)
-        assert base_request.namespace in f.path
-        assert base_request.resource_name in f.path
-
-    def test_annotation_auto_generated(self, service, base_request):
-        import yaml
-
-        f = service._generate_hpa_manifest(base_request)
-        manifest = yaml.safe_load(f.content)
-        assert manifest["metadata"]["annotations"]["titlis.io/auto-generated"] == "true"
-
-
-# ---------------------------------------------------------------------------
-# Testes de _generate_resources_patch
-# ---------------------------------------------------------------------------
-
-
-class TestGenerateResourcesPatch:
-    def test_conteudo_yaml_valido(self, service, base_request):
-        import yaml
-
-        f = service._generate_resources_patch(base_request)
-        manifest = yaml.safe_load(f.content)
-        containers = manifest["spec"]["template"]["spec"]["containers"]
-        assert len(containers) == 1
-        resources = containers[0]["resources"]
-        assert "requests" in resources
-        assert "limits" in resources
-
-    def test_requests_e_limits_definidos(self, service, base_request):
-        import yaml
-
-        f = service._generate_resources_patch(base_request)
-        manifest = yaml.safe_load(f.content)
-        resources = manifest["spec"]["template"]["spec"]["containers"][0]["resources"]
-        assert resources["requests"]["cpu"] == "100m"
-        assert resources["requests"]["memory"] == "128Mi"
-        assert resources["limits"]["cpu"] == "500m"
-        assert resources["limits"]["memory"] == "512Mi"
+    def test_preserva_comentarios_yaml(self, service):
+        """ruamel.yaml deve preservar comentários existentes no arquivo."""
+        resource_issue = RemediationIssue(
+            rule_id="RES-003", rule_name="CPU", description="d", remediation="f"
+        )
+        content, _ = service._modify_deploy_yaml(
+            content=_DEPLOY_YAML_WITH_RESOURCES,
+            issues=[resource_issue],
+            metrics=None,
+            resource_name="my-app",
+            namespace="default",
+            resource_kind="Deployment",
+        )
+        assert "imagem principal" in content  # comentário preservado
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +408,13 @@ class TestGenerateResourcesPatch:
 
 class TestCreateRemediationPr:
     @pytest.mark.asyncio
+    async def test_ignora_sem_dd_git_url(self, service, base_request):
+        base_request.resource_body = _make_body_without_dd_url()
+        result = await service.create_remediation_pr(base_request)
+        assert result.success is False
+        assert DD_GIT_REPO_ENV in (result.error or "")
+
+    @pytest.mark.asyncio
     async def test_fluxo_completo_sucesso(
         self, service, mock_github_port, mock_slack_service, base_request
     ):
@@ -282,33 +423,37 @@ class TestCreateRemediationPr:
         assert result.success is True
         assert result.pull_request is not None
         assert result.pull_request.number == 42
-        assert result.branch_name is not None
 
+        mock_github_port.get_file_content.assert_called_once()
         mock_github_port.create_branch.assert_called_once()
         mock_github_port.commit_files.assert_called_once()
         mock_github_port.create_pull_request.assert_called_once()
         mock_slack_service.send_notification.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_retorna_falha_quando_nao_ha_arquivos(self, service):
-        request = RemediationRequest(
-            resource_name="app",
-            namespace="ns",
-            resource_kind="Deployment",
-            issues=[
-                RemediationIssue(
-                    rule_id="SEC-001",
-                    rule_name="Imagem",
-                    description="desc",
-                    remediation="fix",
-                )
-            ],
-            repo_owner="o",
-            repo_name="r",
-        )
-        result = await service.create_remediation_pr(request)
-        assert result.success is False
-        assert result.error is not None
+    async def test_usa_repo_da_dd_git_url(
+        self, service, mock_github_port, base_request
+    ):
+        """repo_owner e repo_name devem vir de DD_GIT_REPOSITORY_URL."""
+        base_request.resource_body = _make_body("https://github.com/myorg/myrepo")
+        await service.create_remediation_pr(base_request)
+
+        # Verifica que get_file_content foi chamado com o repo correto
+        call = mock_github_port.get_file_content.call_args
+        assert call[1]["repo_owner"] == "myorg"
+        assert call[1]["repo_name"] == "myrepo"
+
+    @pytest.mark.asyncio
+    async def test_arquivo_modificado_e_deploy_yaml(
+        self, service, mock_github_port, base_request
+    ):
+        """O arquivo commitado deve ser sempre manifests/kubernetes/main/deploy.yaml."""
+        await service.create_remediation_pr(base_request)
+
+        commit_call = mock_github_port.commit_files.call_args
+        files = commit_call[1]["files"]
+        assert len(files) == 1
+        assert files[0].path == DEPLOY_YAML_PATH
 
     @pytest.mark.asyncio
     async def test_retorna_falha_quando_create_branch_falha(
@@ -343,67 +488,67 @@ class TestCreateRemediationPr:
     ):
         mock_slack_service.send_notification.side_effect = RuntimeError("slack down")
         result = await service.create_remediation_pr(base_request)
-        # Deve ter sucesso mesmo com Slack falhando
         assert result.success is True
 
     @pytest.mark.asyncio
-    async def test_issues_fixed_populado(
-        self, service, base_request
-    ):
+    async def test_issues_fixed_populado(self, service, base_request):
         result = await service.create_remediation_pr(base_request)
         assert result.success is True
-        assert result.pull_request is not None
-        assert set(result.pull_request.issues_fixed) == {
+        assert set(result.pull_request.issues_fixed) == {  # type: ignore[union-attr]
             i.rule_id for i in base_request.issues
         }
 
 
 # ---------------------------------------------------------------------------
-# Testes de _build_branch_name
+# Testes de _build_pr_body (disclaimer IA + categorias + checklist)
 # ---------------------------------------------------------------------------
 
 
-class TestBuildBranchName:
-    def test_branch_comeca_com_fix(self, service, base_request):
-        name = service._build_branch_name(base_request)
-        assert name.startswith("fix/auto-remediation-")
+class TestBuildPrBody:
+    def test_body_contem_disclaimer_ia(self, service, base_request):
+        body = service._build_pr_body(base_request, ["resources"], None)
+        assert "inteligencia artificial" in body.lower()
+        assert "revisao humana" in body.lower()
 
-    def test_branch_contem_namespace_e_recurso(self, service, base_request):
-        name = service._build_branch_name(base_request)
-        assert base_request.namespace in name
-        assert base_request.resource_name in name
+    def test_body_contem_checklist(self, service, base_request):
+        body = service._build_pr_body(base_request, ["resources"], None)
+        assert "- [ ]" in body
 
-    def test_branch_unica_por_timestamp(self, service, base_request):
-        name1 = service._build_branch_name(base_request)
-        name2 = service._build_branch_name(base_request)
-        # Não deve ser sempre igual (pode ser igual num mesmo segundo, tudo bem)
-        assert isinstance(name1, str)
-        assert isinstance(name2, str)
+    def test_body_contem_metricas_datadog(self, service, base_request):
+        metrics = DatadogProfilingMetrics(cpu_avg_millicores=200, memory_avg_mib=256)
+        body = service._build_pr_body(base_request, ["resources"], metrics)
+        assert "200" in body  # cpu avg
+        assert "256" in body  # memory avg
 
-
-# ---------------------------------------------------------------------------
-# Testes de _build_pr_title e _build_pr_body
-# ---------------------------------------------------------------------------
-
-
-class TestBuildPrContent:
-    def test_titulo_contem_namespace_e_recurso(self, service, base_request):
-        title = service._build_pr_title(base_request)
-        assert base_request.namespace in title
-        assert base_request.resource_name in title
-
-    def test_titulo_contem_contagem_de_issues(self, service, base_request):
-        title = service._build_pr_title(base_request)
-        assert "2" in title
+    def test_body_contem_aviso_sem_metricas(self, service, base_request):
+        body = service._build_pr_body(base_request, ["resources"], None)
+        assert "indisponiveis" in body.lower() or "valores padrao" in body.lower()
 
     def test_body_contem_ids_das_issues(self, service, base_request):
-        files = service._generate_remediation_files(base_request)
-        body = service._build_pr_body(base_request, files)
+        body = service._build_pr_body(base_request, ["resources", "hpa-create"], None)
         for issue in base_request.issues:
             assert issue.rule_id in body
 
-    def test_body_contem_nomes_dos_arquivos(self, service, base_request):
-        files = service._generate_remediation_files(base_request)
-        body = service._build_pr_body(base_request, files)
-        for f in files:
-            assert f.path in body
+    def test_body_contem_deploy_yaml_path(self, service, base_request):
+        body = service._build_pr_body(base_request, ["resources"], None)
+        assert DEPLOY_YAML_PATH in body
+
+
+# ---------------------------------------------------------------------------
+# Testes de _build_pr_title
+# ---------------------------------------------------------------------------
+
+
+class TestBuildPrTitle:
+    def test_titulo_contem_ia(self, service, base_request):
+        title = service._build_pr_title(base_request, ["resources"])
+        assert "[IA]" in title
+
+    def test_titulo_contem_namespace_e_recurso(self, service, base_request):
+        title = service._build_pr_title(base_request, ["resources"])
+        assert base_request.namespace in title
+        assert base_request.resource_name in title
+
+    def test_titulo_contem_categoria(self, service, base_request):
+        title = service._build_pr_title(base_request, ["resources", "hpa-create"])
+        assert "RESOURCES" in title or "HPA-CREATE" in title

@@ -3,6 +3,7 @@ Testes unitários para GitHubRepository.
 
 Cobre:
 - branch_exists (encontrada / não encontrada / erro HTTP genérico)
+- get_file_content (arquivo encontrado / 404 / erro HTTP)
 - create_branch (sucesso / falha ao obter SHA / falha ao criar ref)
 - commit_files (arquivo novo / arquivo existente / falha parcial)
 - create_pull_request (sucesso / payload correto)
@@ -83,6 +84,53 @@ class TestBranchExists:
         mock_client.get.side_effect = Exception("network error")
         result = await repo.branch_exists("org", "repo", "main")
         assert result is False
+
+
+# ---------------------------------------------------------------------------
+# get_file_content
+# ---------------------------------------------------------------------------
+
+
+class TestGetFileContent:
+    @pytest.mark.asyncio
+    async def test_retorna_conteudo_decodificado(self, repo, mock_client):
+        import base64
+
+        raw = base64.b64encode(b"apiVersion: apps/v1\n").decode()
+        mock_client.get.return_value = {"content": raw}
+        result = await repo.get_file_content("org", "repo", "path/file.yaml", "main")
+        assert result == "apiVersion: apps/v1\n"
+
+    @pytest.mark.asyncio
+    async def test_retorna_none_quando_arquivo_nao_existe(self, repo, mock_client):
+        mock_client.get.side_effect = _make_http_error(404)
+        result = await repo.get_file_content("org", "repo", "missing.yaml", "main")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_retorna_none_em_erro_generico(self, repo, mock_client):
+        mock_client.get.side_effect = Exception("network error")
+        result = await repo.get_file_content("org", "repo", "file.yaml", "main")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_retorna_none_em_http_error_nao_404(self, repo, mock_client):
+        mock_client.get.side_effect = _make_http_error(403)
+        result = await repo.get_file_content("org", "repo", "file.yaml", "main")
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_parametros_corretos_na_chamada(self, repo, mock_client):
+        import base64
+
+        mock_client.get.return_value = {
+            "content": base64.b64encode(b"content").decode()
+        }
+        await repo.get_file_content("org", "repo", "manifests/deploy.yaml", "develop")
+        mock_client.get.assert_called_once_with(
+            "/repos/org/repo/contents/manifests/deploy.yaml",
+            params={"ref": "develop"},
+        )
 
 
 # ---------------------------------------------------------------------------

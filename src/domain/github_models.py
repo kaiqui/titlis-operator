@@ -1,12 +1,44 @@
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class RemediationRuleCategory(str, Enum):
     HPA = "hpa"
     RESOURCES = "resources"
+
+
+@dataclass
+class DatadogProfilingMetrics:
+    """Métricas de profiling coletadas do Datadog para embasar os valores sugeridos."""
+
+    cpu_avg_millicores: Optional[int] = None   # CPU média em millicores
+    memory_avg_mib: Optional[int] = None       # Memória média em MiB
+
+    def suggest_cpu_request(self) -> str:
+        """Request de CPU: média + 20% de buffer, mínimo 100m."""
+        if self.cpu_avg_millicores:
+            return f"{max(100, int(self.cpu_avg_millicores * 1.2))}m"
+        return "100m"
+
+    def suggest_cpu_limit(self) -> str:
+        """Limit de CPU: 3x a média, mínimo 300m."""
+        if self.cpu_avg_millicores:
+            return f"{max(300, int(self.cpu_avg_millicores * 3))}m"
+        return "500m"
+
+    def suggest_memory_request(self) -> str:
+        """Request de memória: média + 20% de buffer, mínimo 128Mi."""
+        if self.memory_avg_mib:
+            return f"{max(128, int(self.memory_avg_mib * 1.2))}Mi"
+        return "128Mi"
+
+    def suggest_memory_limit(self) -> str:
+        """Limit de memória: 2x a média, mínimo 256Mi."""
+        if self.memory_avg_mib:
+            return f"{max(256, int(self.memory_avg_mib * 2))}Mi"
+        return "512Mi"
 
 
 @dataclass
@@ -18,22 +50,6 @@ class RemediationIssue:
     description: str
     remediation: str
     category: RemediationRuleCategory = RemediationRuleCategory.RESOURCES
-
-    # Mapeamento de regras para categoria
-    _HPA_RULE_IDS: frozenset = field(
-        default_factory=lambda: frozenset({"RES-007", "RES-008", "PERF-002"}),
-        init=False,
-        repr=False,
-        compare=False,
-    )
-    _RESOURCE_RULE_IDS: frozenset = field(
-        default_factory=lambda: frozenset(
-            {"RES-003", "RES-004", "RES-005", "RES-006", "PERF-001"}
-        ),
-        init=False,
-        repr=False,
-        compare=False,
-    )
 
     def __post_init__(self) -> None:
         if self.rule_id in {"RES-007", "RES-008", "PERF-002"}:
@@ -66,14 +82,18 @@ class PullRequestResult:
 
 @dataclass
 class RemediationRequest:
-    """Solicitação de remediação automática para um recurso Kubernetes."""
+    """
+    Solicitação de remediação automática para um recurso Kubernetes.
+
+    O repo_owner e repo_name são extraídos internamente pelo RemediationService
+    a partir de DD_GIT_REPOSITORY_URL no resource_body.
+    """
 
     resource_name: str
     namespace: str
     resource_kind: str
     issues: List[RemediationIssue]
-    repo_owner: str
-    repo_name: str
+    resource_body: Dict[str, Any]   # corpo completo do recurso K8s (spec, env vars, etc.)
     base_branch: str = "develop"
 
 

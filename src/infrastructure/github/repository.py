@@ -1,5 +1,5 @@
 import base64
-from typing import List
+from typing import List, Optional
 
 import httpx
 
@@ -9,6 +9,8 @@ from src.infrastructure.github.client import GitHubAPIClient
 from src.utils.json_logger import get_logger
 
 logger = get_logger(__name__)
+
+DEPLOY_YAML_PATH = "manifests/kubernetes/main/deploy.yaml"
 
 
 class GitHubRepository(GitHubPort):
@@ -73,6 +75,42 @@ class GitHubRepository(GitHubPort):
             )
             return False
 
+    async def get_file_content(
+        self,
+        repo_owner: str,
+        repo_name: str,
+        file_path: str,
+        ref: str,
+    ) -> Optional[str]:
+        """
+        Retorna o conteúdo decodificado (base64 → UTF-8) de um arquivo.
+        Retorna None se o arquivo não existir ou houver erro.
+        """
+        try:
+            response = await self._client.get(
+                f"/repos/{repo_owner}/{repo_name}/contents/{file_path}",
+                params={"ref": ref},
+            )
+            raw: str = response.get("content", "")
+            # A API do GitHub retorna o conteúdo com quebras de linha no base64
+            decoded = base64.b64decode(raw.replace("\n", "")).decode("utf-8")
+            return decoded
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 404:
+                logger.info(
+                    "Arquivo não encontrado no repositório",
+                    extra={"path": file_path, "ref": ref},
+                )
+                return None
+            logger.exception(
+                "Erro HTTP ao ler arquivo",
+                extra={"path": file_path, "status": exc.response.status_code},
+            )
+            return None
+        except Exception:
+            logger.exception("Erro ao ler conteúdo do arquivo", extra={"path": file_path})
+            return None
+
     async def commit_files(
         self,
         repo_owner: str,
@@ -86,7 +124,7 @@ class GitHubRepository(GitHubPort):
         for f in files:
             try:
                 # Verifica se o arquivo já existe para obter o SHA (necessário para update)
-                existing_sha: str | None = None
+                existing_sha: Optional[str] = None
                 try:
                     existing = await self._client.get(
                         f"/repos/{repo_owner}/{repo_name}/contents/{f.path}",

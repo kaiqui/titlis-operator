@@ -443,7 +443,8 @@ def get_remediation_service():
     """
     Retorna instância do RemediationService se a auto-remediação estiver habilitada.
 
-    Combina GitHubRepository + SlackNotificationService no serviço de orquestração.
+    Combina GitHubRepository + SlackNotificationService + DatadogRepository
+    no serviço de orquestração.
     """
     from src.application.services.remediation_service import RemediationService
 
@@ -453,9 +454,21 @@ def get_remediation_service():
 
     slack_service = get_slack_service()
 
+    # DatadogRepository é opcional — se não estiver configurado, as métricas
+    # serão ignoradas e valores padrão serão usados para resources
+    datadog_repo: Optional[DatadogRepository] = None
+    try:
+        datadog_repo = get_datadog_repository()
+    except Exception:
+        logger.warning(
+            "DatadogRepository indisponivel para RemediationService — "
+            "valores de resources padrao serao usados"
+        )
+
     service = RemediationService(
         github_port=github_repo,
         slack_service=slack_service,
+        datadog_repository=datadog_repo,
     )
 
     logger.info("RemediationService inicializado")
