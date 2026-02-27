@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: kailima/titlis-operator
-  tag: "20260227-1639"
+  tag: "latest"
   pullPolicy: IfNotPresent
 
 namespace: titlis
