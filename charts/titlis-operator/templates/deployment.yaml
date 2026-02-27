@@ -3,7 +3,7 @@ kind: Deployment
 metadata:
   name: {{ include "titlis.fullname" . }}
   labels:
-    {{- include "titlis.labels" . | nindent 4 }} 
+    {{- include "titlis.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
@@ -28,7 +28,7 @@ spec:
             - secretRef:
                 name: titlis-slack-keys
           env:
-            # Mapeamento manual das chaves do Datadog (Secret -> ENV)
+            # ── Datadog (secrets) ───────────────────────────────────────────
             - name: DD_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -39,12 +39,44 @@ spec:
                 secretKeyRef:
                   name: titlis-datadog-keys
                   key: app-key
-            
-            # Envs padrão do seu Deployment
+
+            # ── GitHub (secret opcional) ────────────────────────────────────
+            - name: GITHUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-github-keys
+                  key: token
+                  optional: true
+
+            # ── CAST AI (secret opcional) ───────────────────────────────────
+            - name: CASTAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-castai-keys
+                  key: api-key
+                  optional: true
+            - name: CASTAI_CLUSTER_ID
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-castai-keys
+                  key: cluster-id
+                  optional: true
+
+            # ── Backstage (secret opcional) ─────────────────────────────────
+            - name: BACKSTAGE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: titlis-backstage-keys
+                  key: token
+                  optional: true
+
+            # ── Downward API ────────────────────────────────────────────────
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+
+            # ── Operator behavior ───────────────────────────────────────────
             - name: RECONCILE_INTERVAL_SECONDS
               valueFrom:
                 configMapKeyRef:
@@ -55,8 +87,158 @@ spec:
                 configMapKeyRef:
                   name: {{ include "titlis.fullname" . }}-config
                   key: DEBOUNCE_SECONDS
+            - name: ENABLE_LEADER_ELECTION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_LEADER_ELECTION
+            - name: LEADER_ELECTION_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: LEADER_ELECTION_NAMESPACE
+
+            # ── Kubernetes ──────────────────────────────────────────────────
+            - name: KUBERNETES_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: KUBERNETES_NAMESPACE
+            - name: SERVICE_ACCOUNT_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: SERVICE_ACCOUNT_NAME
+
+            # ── Logging ─────────────────────────────────────────────────────
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: LOG_LEVEL
+            - name: LOG_FORMAT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: LOG_FORMAT
+
+            # ── Observability ───────────────────────────────────────────────
+            - name: METRICS_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: METRICS_ENABLED
+            - name: TRACING_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: TRACING_ENABLED
+
+            # ── Controllers feature flags ───────────────────────────────────
+            - name: ENABLE_SCORECARD_CONTROLLER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_SCORECARD_CONTROLLER
+            - name: ENABLE_SLO_CONTROLLER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_SLO_CONTROLLER
+            - name: ENABLE_AUTO_REMEDIATION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_AUTO_REMEDIATION
+
+            # ── CAST AI Monitor ─────────────────────────────────────────────
+            - name: ENABLE_CASTAI_MONITOR
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_CASTAI_MONITOR
+            - name: CASTAI_MONITOR_NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: CASTAI_MONITOR_NAMESPACE
+            - name: CASTAI_MONITOR_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: CASTAI_MONITOR_INTERVAL_SECONDS
+            - name: CASTAI_CLUSTER_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: CASTAI_CLUSTER_NAME
+            - name: CASTAI_COST_CACHE_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: CASTAI_COST_CACHE_TTL_SECONDS
+            - name: ENABLE_CASTAI_COST_ENRICHMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_CASTAI_COST_ENRICHMENT
+
+            # ── Backstage ───────────────────────────────────────────────────
+            - name: BACKSTAGE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: BACKSTAGE_URL
+            - name: BACKSTAGE_CACHE_TTL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: BACKSTAGE_CACHE_TTL_SECONDS
+            - name: ENABLE_BACKSTAGE_ENRICHMENT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_BACKSTAGE_ENRICHMENT
+
+            # ── GitHub integration ──────────────────────────────────────────
+            - name: GITHUB_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: GITHUB_ENABLED
+            - name: GITHUB_REPO_OWNER
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: GITHUB_REPO_OWNER
+            - name: GITHUB_REPO_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: GITHUB_REPO_NAME
+            - name: GITHUB_BASE_BRANCH
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: GITHUB_BASE_BRANCH
+            - name: GITHUB_TIMEOUT_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: GITHUB_TIMEOUT_SECONDS
+
+            # ── Datadog config ──────────────────────────────────────────────
+            - name: DD_SITE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: DD_SITE
             - name: DD_SECRET_NAME
-              value: "titlis-datadog-keys"
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: DD_SECRET_NAME
+
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           livenessProbe:

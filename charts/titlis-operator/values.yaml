@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: kailima/titlis-operator
-  tag: "latest"
+  tag: "20260227-1639"
   pullPolicy: IfNotPresent
 
 namespace: titlis
@@ -16,7 +16,61 @@ operator:
   reconciliation:
     intervalSeconds: 300
     debounceSeconds: 30
-  leaderElection: true
+  leaderElection:
+    enabled: true
+    namespace: "titlis"
+
+# Kubernetes
+kubernetes:
+  namespace: "titlis-system"
+  serviceAccountName: "titlis-operator"
+
+# Logging
+logging:
+  level: "INFO"
+  format: "json"
+
+# Observability
+observability:
+  metricsEnabled: true
+  tracingEnabled: false
+
+# Controllers feature flags
+controllers:
+  scorecardEnabled: true
+  sloEnabled: true
+  autoRemediationEnabled: true
+
+# CAST AI Monitor
+castai:
+  monitorEnabled: false
+  monitorNamespace: "castai-agent"
+  monitorIntervalSeconds: 60
+  clusterName: "develop"
+  # Secrets: CASTAI_API_KEY and CASTAI_CLUSTER_ID must be in titlis-castai-keys secret
+  costCacheTtlSeconds: 300
+  costEnrichmentEnabled: false
+
+# Backstage
+backstage:
+  url: ""
+  cacheTtlSeconds: 300
+  enrichmentEnabled: false
+  # Secret: BACKSTAGE_TOKEN must be in titlis-backstage-keys secret
+
+# GitHub integration (auto-remediation)
+github:
+  enabled: true
+  repoOwner: ""
+  repoName: ""
+  baseBranch: "develop"
+  timeoutSeconds: 30
+  # Secret: GITHUB_TOKEN must be in titlis-github-keys secret
+
+# Datadog
+datadog:
+  site: "datadoghq.com"
+  secretName: "titlis-datadog-keys"
 
 resources:
   requests:
@@ -30,10 +84,6 @@ podAnnotations: {}
 nodeSelector: {}
 tolerations: []
 affinity: {}
-
-leaderElection:
-  enabled: true
-  leaseName: titlis-operator-leader
 
 serviceAccount:
   create: true
