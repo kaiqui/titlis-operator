@@ -58,7 +58,7 @@ class GitHubSettings(BaseSettings):
     """Configurações para integração com GitHub (remediação automática)."""
 
     # Habilitar/desabilitar remediação automática via GitHub
-    enabled: bool = Field(default=False, validation_alias="GITHUB_ENABLED")
+    enabled: bool = Field(default=True, validation_alias="GITHUB_ENABLED")
 
     # Token de acesso pessoal ou GitHub App token
     token: Optional[SecretStr] = Field(default=None, validation_alias="GITHUB_TOKEN")
@@ -113,10 +113,10 @@ class Settings(BaseSettings):
     tracing_enabled: bool = Field(default=False, validation_alias="TRACING_ENABLED")
 
     # Novas flags para ativar/desativar controllers
-    enable_scorecard_controller: bool = Field(default=False, validation_alias="ENABLE_SCORECARD_CONTROLLER")
+    enable_scorecard_controller: bool = Field(default=True, validation_alias="ENABLE_SCORECARD_CONTROLLER")
     enable_slo_controller: bool = Field(default=True, validation_alias="ENABLE_SLO_CONTROLLER")
 
-    enable_castai_monitor: bool = Field(default=True, validation_alias="ENABLE_CASTAI_MONITOR")
+    enable_castai_monitor: bool = Field(default=False, validation_alias="ENABLE_CASTAI_MONITOR")
     castai_monitor_namespace: str = Field(default="castai-agent", validation_alias="CASTAI_MONITOR_NAMESPACE")
     castai_monitor_interval_seconds: int = Field(default=60, validation_alias="CASTAI_MONITOR_INTERVAL_SECONDS")
     castai_cluster_name: str = Field(default="develop", validation_alias="CASTAI_CLUSTER_NAME")
@@ -137,7 +137,7 @@ class Settings(BaseSettings):
 
     # Auto-remediação via GitHub PR
     enable_auto_remediation: bool = Field(
-        default=False, validation_alias="ENABLE_AUTO_REMEDIATION"
+        default=True, validation_alias="ENABLE_AUTO_REMEDIATION"
     )
 
     model_config = SettingsConfigDict(
