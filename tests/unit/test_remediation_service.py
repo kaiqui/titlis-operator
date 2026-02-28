@@ -7,6 +7,7 @@ Cobre:
 - Coleta de métricas Datadog (com e sem dados)
 - Modificação precisa do deploy.yaml (resources e HPA)
 - Fluxo completo de criação do PR
+- Idempotência: trava em memória e verificação de PR existente
 - Tratamento de erros em cada etapa
 - Notificação Slack após o PR
 - Valores sugeridos pelo DatadogProfilingMetrics
@@ -80,6 +81,7 @@ def mock_github_port():
     port.branch_exists.return_value = False
     port.create_branch.return_value = True
     port.commit_files.return_value = True
+    port.find_open_remediation_pr.return_value = None  # sem PR existente por padrão
     port.get_file_content.return_value = (
         "apiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: my-app\n"
         "spec:\n  template:\n    spec:\n      containers:\n"
@@ -87,7 +89,7 @@ def mock_github_port():
     )
     port.create_pull_request.return_value = PullRequestResult(
         number=42,
-        title="[IA] fix(default/my-app): RESOURCES — 2 issue(s)",
+        title="fix(default/my-app): RESOURCES — 2 issue(s)",
         url="https://github.com/org/my-app/pull/42",
         branch="fix/auto-remediation-default-my-app-20240101000000",
         base_branch="develop",
@@ -424,11 +426,67 @@ class TestCreateRemediationPr:
         assert result.pull_request is not None
         assert result.pull_request.number == 42
 
+        mock_github_port.find_open_remediation_pr.assert_called_once()
         mock_github_port.get_file_content.assert_called_once()
         mock_github_port.create_branch.assert_called_once()
         mock_github_port.commit_files.assert_called_once()
         mock_github_port.create_pull_request.assert_called_once()
         mock_slack_service.send_notification.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_idempotencia_pr_existente_aborta(
+        self, service, mock_github_port, base_request
+    ):
+        """Se já existe um PR aberto para o recurso, deve abortar sem criar novo."""
+        existing = PullRequestResult(
+            number=10,
+            title="fix(default/my-app): RESOURCES — 1 issue(s)",
+            url="https://github.com/org/my-app/pull/10",
+            branch="fix/auto-remediation-default-my-app-20240101000000",
+            base_branch="develop",
+        )
+        mock_github_port.find_open_remediation_pr.return_value = existing
+
+        result = await service.create_remediation_pr(base_request)
+
+        assert result.success is False
+        assert result.pull_request is not None
+        assert result.pull_request.number == 10
+        # Não deve ter criado branch nem PR novo
+        mock_github_port.create_branch.assert_not_called()
+        mock_github_port.create_pull_request.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_idempotencia_trava_em_memoria(
+        self, service, mock_github_port, base_request
+    ):
+        """Chave em _pending deve bloquear execução concorrente."""
+        repo_info = service._extract_git_repo(base_request.resource_body)
+        assert repo_info is not None
+        repo_owner, repo_name = repo_info
+        key = RemediationService._resource_key(
+            repo_owner, repo_name, base_request.namespace, base_request.resource_name
+        )
+        # Simula execução em andamento
+        service._pending.add(key)
+
+        result = await service.create_remediation_pr(base_request)
+
+        assert result.success is False
+        assert "em andamento" in (result.error or "")
+        mock_github_port.create_branch.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_trava_liberada_apos_execucao(
+        self, service, mock_github_port, base_request
+    ):
+        """Chave deve ser removida de _pending mesmo em caso de falha."""
+        mock_github_port.create_branch.return_value = False  # força falha
+
+        await service.create_remediation_pr(base_request)
+
+        # _pending deve estar vazio após a execução
+        assert len(service._pending) == 0
 
     @pytest.mark.asyncio
     async def test_usa_repo_da_dd_git_url(
@@ -500,15 +558,21 @@ class TestCreateRemediationPr:
 
 
 # ---------------------------------------------------------------------------
-# Testes de _build_pr_body (disclaimer IA + categorias + checklist)
+# Testes de _build_pr_body (disclaimer + categorias + checklist)
 # ---------------------------------------------------------------------------
 
 
 class TestBuildPrBody:
-    def test_body_contem_disclaimer_ia(self, service, base_request):
+    def test_body_contem_titlis_operator(self, service, base_request):
         body = service._build_pr_body(base_request, ["resources"], None)
-        assert "inteligencia artificial" in body.lower()
+        assert "titlis-operator" in body.lower()
         assert "revisao humana" in body.lower()
+
+    def test_body_nao_contem_ia(self, service, base_request):
+        """Não deve haver referências a 'IA' ou 'inteligencia artificial'."""
+        body = service._build_pr_body(base_request, ["resources"], None)
+        assert "inteligencia artificial" not in body.lower()
+        assert "[ia]" not in body.lower()
 
     def test_body_contem_checklist(self, service, base_request):
         body = service._build_pr_body(base_request, ["resources"], None)
@@ -540,9 +604,10 @@ class TestBuildPrBody:
 
 
 class TestBuildPrTitle:
-    def test_titulo_contem_ia(self, service, base_request):
+    def test_titulo_nao_contem_ia(self, service, base_request):
         title = service._build_pr_title(base_request, ["resources"])
-        assert "[IA]" in title
+        assert "[IA]" not in title
+        assert "IA" not in title.split()
 
     def test_titulo_contem_namespace_e_recurso(self, service, base_request):
         title = service._build_pr_title(base_request, ["resources"])

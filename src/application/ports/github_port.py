@@ -59,3 +59,21 @@ class GitHubPort(ABC):
     ) -> PullRequestResult:
         """Cria um Pull Request de branch_name para base_branch."""
         pass
+
+    @abstractmethod
+    async def find_open_remediation_pr(
+        self,
+        repo_owner: str,
+        repo_name: str,
+        namespace: str,
+        resource_name: str,
+        base_branch: str,
+    ) -> Optional[PullRequestResult]:
+        """
+        Procura um PR aberto de remediação para o recurso informado.
+
+        Filtra PRs cujo head branch começa com
+        'fix/auto-remediation-{namespace}-{resource_name}-'.
+        Retorna o primeiro encontrado, ou None.
+        """
+        pass

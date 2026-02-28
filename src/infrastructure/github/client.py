@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -32,6 +32,19 @@ class GitHubAPIClient:
             response = await http.get(url, headers=self._headers, params=params)
             response.raise_for_status()
             result: Dict[str, Any] = response.json()
+            return result
+
+    async def get_list(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """Executa GET e retorna a resposta como lista (endpoints que retornam arrays)."""
+        url = f"{GITHUB_API_BASE}{path}"
+        async with httpx.AsyncClient(timeout=self._timeout) as http:
+            response = await http.get(url, headers=self._headers, params=params)
+            response.raise_for_status()
+            result: List[Dict[str, Any]] = response.json()
             return result
 
     async def post(
