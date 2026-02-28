@@ -200,3 +200,70 @@ class GitHubRepository(GitHubPort):
             },
         )
         return pr
+
+    async def find_open_remediation_pr(
+        self,
+        repo_owner: str,
+        repo_name: str,
+        namespace: str,
+        resource_name: str,
+        base_branch: str,
+    ) -> Optional[PullRequestResult]:
+        """
+        Busca um PR aberto criado pelo titlis-operator para este recurso.
+
+        Itera sobre PRs abertos com base em base_branch e filtra pelo prefixo
+        'fix/auto-remediation-{namespace}-{resource_name}-' no head branch.
+        """
+        safe_name = resource_name.replace("/", "-")
+        branch_prefix = f"fix/auto-remediation-{namespace}-{safe_name}-"
+
+        try:
+            page = 1
+            while True:
+                prs = await self._client.get_list(
+                    f"/repos/{repo_owner}/{repo_name}/pulls",
+                    params={
+                        "state": "open",
+                        "base": base_branch,
+                        "per_page": 100,
+                        "page": page,
+                    },
+                )
+
+                if not prs:
+                    break
+
+                for pr_data in prs:
+                    head_ref: str = pr_data.get("head", {}).get("ref", "")
+                    if head_ref.startswith(branch_prefix):
+                        pr = PullRequestResult(
+                            number=int(pr_data["number"]),
+                            title=str(pr_data["title"]),
+                            url=str(pr_data["html_url"]),
+                            branch=head_ref,
+                            base_branch=base_branch,
+                        )
+                        logger.info(
+                            "PR de remediacao existente encontrado",
+                            extra={
+                                "pr_number": pr.number,
+                                "pr_url": pr.url,
+                                "branch": head_ref,
+                                "resource": f"{namespace}/{resource_name}",
+                            },
+                        )
+                        return pr
+
+                if len(prs) < 100:
+                    break
+                page += 1
+
+            return None
+
+        except Exception:
+            logger.exception(
+                "Erro ao buscar PR de remediacao existente",
+                extra={"resource": f"{namespace}/{resource_name}"},
+            )
+            return None

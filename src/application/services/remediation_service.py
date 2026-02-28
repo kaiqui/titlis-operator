@@ -5,18 +5,20 @@ Fluxo ao detectar issues remediáveis no scorecard:
   1. Verifica se o Deployment tem a env DD_GIT_REPOSITORY_URL
      (pré-condição obrigatória — sem ela, remediação não é realizada)
   2. Extrai owner/repo da URL para identificar o repositório da app
-  3. Coleta métricas de profiling (CPU/memória) do Datadog para embasar os valores
-  4. Lê manifests/kubernetes/main/deploy.yaml no repositório da app
-  5. Modifica APENAS as seções necessárias, preservando comentários (ruamel.yaml)
-  6. Cria uma branch a partir da 'develop'
-  7. Commita o deploy.yaml modificado
-  8. Abre Pull Request para 'develop' com categorização, disclaimer de IA e checklist
-  9. Notifica o canal Slack
+  3. Verifica idempotência: se já existe um PR aberto para este recurso, aborta
+  4. Adquire trava em memória para evitar execuções concorrentes
+  5. Coleta métricas de profiling (CPU/memória) do Datadog para embasar os valores
+  6. Lê manifests/kubernetes/main/deploy.yaml no repositório da app
+  7. Modifica APENAS as seções necessárias, preservando comentários (ruamel.yaml)
+  8. Cria uma branch a partir da 'develop'
+  9. Commita o deploy.yaml modificado
+ 10. Abre Pull Request para 'develop' com categorização e checklist
+ 11. Notifica o canal Slack
 """
 import re
 from datetime import datetime, timezone
 from io import StringIO
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.application.ports.github_port import GitHubPort
 from src.application.services.slack_service import SlackNotificationService
@@ -56,6 +58,10 @@ class RemediationService:
 
     Só atua em Deployments que possuem DD_GIT_REPOSITORY_URL — o valor
     dessa env indica o repositório que contém os manifestos da aplicação.
+
+    Garante idempotência em duas camadas:
+    - Trava em memória (_pending): evita execuções concorrentes para o mesmo recurso
+    - Verificação de PR existente: antes de criar branch, consulta o GitHub
     """
 
     def __init__(
@@ -68,6 +74,8 @@ class RemediationService:
         self._slack = slack_service
         self._datadog = datadog_repository
         self.logger = get_logger(self.__class__.__name__)
+        # Trava em memória: evita execuções concorrentes para o mesmo recurso
+        self._pending: Set[str] = set()
 
     # ------------------------------------------------------------------
     # Ponto de entrada principal
@@ -98,6 +106,60 @@ class RemediationService:
             )
 
         repo_owner, repo_name = repo_info
+
+        # 2. Trava em memória: evita execuções concorrentes para o mesmo recurso
+        resource_key = self._resource_key(
+            repo_owner, repo_name, request.namespace, request.resource_name
+        )
+        if resource_key in self._pending:
+            self.logger.info(
+                "Remediacao ignorada: ja em andamento para este recurso",
+                extra={"resource": f"{request.namespace}/{request.resource_name}"},
+            )
+            return RemediationResult(
+                success=False,
+                error=f"Remediacao ja em andamento para '{resource_key}'",
+            )
+
+        # 3. Idempotência: verifica se já existe um PR aberto para este recurso
+        existing_pr = await self._github.find_open_remediation_pr(
+            repo_owner=repo_owner,
+            repo_name=repo_name,
+            namespace=request.namespace,
+            resource_name=request.resource_name,
+            base_branch=request.base_branch,
+        )
+        if existing_pr:
+            self.logger.info(
+                "PR de remediacao ja existe — remediacao ignorada",
+                extra={
+                    "resource": f"{request.namespace}/{request.resource_name}",
+                    "pr_number": existing_pr.number,
+                    "pr_url": existing_pr.url,
+                },
+            )
+            return RemediationResult(
+                success=False,
+                error=(
+                    f"PR de remediacao ja existe: "
+                    f"#{existing_pr.number} — {existing_pr.url}"
+                ),
+                pull_request=existing_pr,
+            )
+
+        self._pending.add(resource_key)
+        try:
+            return await self._execute_remediation(request, repo_owner, repo_name)
+        finally:
+            self._pending.discard(resource_key)
+
+    async def _execute_remediation(
+        self,
+        request: RemediationRequest,
+        repo_owner: str,
+        repo_name: str,
+    ) -> RemediationResult:
+        """Executa as etapas de remediação após validação de idempotência."""
         self.logger.info(
             "Remediacao iniciada",
             extra={
@@ -109,10 +171,10 @@ class RemediationService:
             },
         )
 
-        # 2. Coleta métricas do Datadog (opcional — falha silenciosa)
+        # 4. Coleta métricas do Datadog (opcional — falha silenciosa)
         metrics = self._fetch_profiling_metrics(request.resource_name, request.namespace)
 
-        # 3. Lê o deploy.yaml atual do repositório
+        # 5. Lê o deploy.yaml atual do repositório
         current_content = await self._github.get_file_content(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -120,7 +182,7 @@ class RemediationService:
             ref=request.base_branch,
         )
 
-        # 4. Gera o conteúdo modificado do deploy.yaml
+        # 6. Gera o conteúdo modificado do deploy.yaml
         modified_content, categories = self._modify_deploy_yaml(
             content=current_content or "",
             issues=request.issues,
@@ -143,7 +205,7 @@ class RemediationService:
             commit_message=self._build_commit_message(request, categories),
         )
 
-        # 5. Cria branch a partir da develop
+        # 7. Cria branch a partir da develop
         created = await self._github.create_branch(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -157,7 +219,7 @@ class RemediationService:
                 error=f"Falha ao criar branch '{branch_name}'",
             )
 
-        # 6. Commita o deploy.yaml modificado
+        # 8. Commita o deploy.yaml modificado
         committed = await self._github.commit_files(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -171,7 +233,7 @@ class RemediationService:
                 error="Falha ao commitar as modificacoes no deploy.yaml",
             )
 
-        # 7. Cria PR para develop
+        # 9. Cria PR para develop
         try:
             pr = await self._github.create_pull_request(
                 repo_owner=repo_owner,
@@ -191,7 +253,7 @@ class RemediationService:
 
         pr.issues_fixed = [i.rule_id for i in request.issues]
 
-        # 8. Notifica no Slack
+        # 10. Notifica no Slack
         await self._notify_slack(request, pr, categories, metrics)
 
         self.logger.info(
@@ -239,6 +301,13 @@ class RemediationService:
         if match:
             return match.group(1), match.group(2)
         return None
+
+    @staticmethod
+    def _resource_key(
+        repo_owner: str, repo_name: str, namespace: str, resource_name: str
+    ) -> str:
+        """Chave única para identificar um recurso sendo processado."""
+        return f"{repo_owner}/{repo_name}:{namespace}/{resource_name}"
 
     # ------------------------------------------------------------------
     # Métricas Datadog
@@ -431,7 +500,7 @@ class RemediationService:
         cats = "+".join(categories) if categories else "misc"
         return (
             f"fix({cats}): auto-remediacao em "
-            f"{request.namespace}/{request.resource_name} [IA]"
+            f"{request.namespace}/{request.resource_name} [titlis-operator]"
         )
 
     def _build_pr_title(
@@ -439,7 +508,7 @@ class RemediationService:
     ) -> str:
         cats_str = ", ".join(categories).upper() if categories else "MISC"
         return (
-            f"[IA] fix({request.namespace}/{request.resource_name}): "
+            f"fix({request.namespace}/{request.resource_name}): "
             f"{cats_str} — {len(request.issues)} issue(s)"
         )
 
@@ -492,8 +561,7 @@ class RemediationService:
 
         return (
             f"> [!WARNING]\n"
-            f"> **Este PR foi gerado automaticamente por inteligencia artificial"
-            f" (titlis-operator).**\n"
+            f"> **Este PR foi gerado pelo servico titlis-operator.**\n"
             f"> **Revisao humana e obrigatoria antes do merge.**\n\n"
             f"---\n\n"
             f"## Auto-Remediacao: `{request.namespace}/{request.resource_name}`"
@@ -514,7 +582,7 @@ class RemediationService:
             f"- [ ] Testar em ambiente de staging antes do merge\n"
             f"- [ ] Validar compatibilidade das modificacoes com a aplicacao\n\n"
             f"---\n"
-            f"*Gerado automaticamente pelo titlis-operator em {now_iso}*  \n"
+            f"*Gerado pelo titlis-operator em {now_iso}*  \n"
             f"*Baseado em metricas de profiling coletadas do Datadog*"
         )
 
@@ -546,7 +614,7 @@ class RemediationService:
             )
 
         notification = SlackNotification(
-            title=f"[IA] Auto-Remediacao PR Criado — {cats_str}",
+            title=f"Auto-Remediacao PR Criado — {cats_str}",
             message=(
                 f"*Recurso:* `{request.namespace}/{request.resource_name}`"
                 f" ({request.resource_kind})\n"
@@ -565,7 +633,7 @@ class RemediationService:
                 "branch": pr.branch,
                 "resource": f"{request.namespace}/{request.resource_name}",
                 "categories": cats_str,
-                "generated_by": "IA / titlis-operator",
+                "generated_by": "titlis-operator",
             },
         )
 
