@@ -18,26 +18,16 @@ logger = get_logger(__name__)
 
 
 class ScorecardService:
-    """Serviço principal de validação e pontuação."""
-    
+
     def __init__(self, config_path: Optional[str] = None):
         self.logger = get_logger(self.__class__.__name__)
-        
-        # Carrega configuração
         self.config = self._load_config(config_path)
-        
-        # Inicializa clientes Kubernetes
         self.core, self.apps, self.custom = get_k8s_apis()
         self.autoscaling_v2 = client.AutoscalingV2Api()
         self.networking_v1 = client.NetworkingV1Api()
-        
-        # State store para histórico e cooldown
         self.state_store = KubeStateStore(namespace="titlis-system", name="scorecard-state")
-        
-        # Cache de validações recentes
         self._validation_cache: Dict[str, ResourceScorecard] = {}
         self._cache_ttl = timedelta(minutes=5)
-        
         self.logger.info(
             "ScorecardService inicializado",
             extra={
@@ -46,12 +36,10 @@ class ScorecardService:
                 "pilars": list(set(r.pillar for r in self.config.rules if r.enabled))
             }
         )
-    
+
     def _load_config(self, config_path: Optional[str]) -> ScorecardConfig:
-        """Carrega configuração do scorecard."""
-        
         default_rules = self._get_default_rules()
-        
+
         if config_path:
             try:
                 with open(config_path, 'r') as f:
@@ -59,14 +47,11 @@ class ScorecardService:
                     return self._parse_config(config_data, default_rules)
             except Exception:
                 self.logger.exception("Erro ao carregar configuração")
-        
+
         return ScorecardConfig(rules=default_rules)
-    
+
     def _get_default_rules(self) -> List[ValidationRule]:
-        """Retorna as regras padrão de validação."""
-        
         return [
-            # === PILAR: RESILIÊNCIA ===
             ValidationRule(
                 id="RES-001",
                 pillar=ValidationPillar.RESILIENCE,
@@ -229,8 +214,6 @@ class ScorecardService:
                 applies_to=["Deployment"],
                 remediation="Configure strategy.type: RollingUpdate com maxUnavailable/maxSurge"
             ),
-            
-            # === PILAR: SEGURANÇA ===
             ValidationRule(
                 id="SEC-001",
                 pillar=ValidationPillar.SECURITY,
@@ -276,8 +259,6 @@ class ScorecardService:
                 weight=5.0,
                 remediation="Remova capabilities desnecessárias: securityContext.capabilities.drop: ['ALL']"
             ),
-            
-            # === PILAR: PERFORMANCE ===
             ValidationRule(
                 id="PERF-001",
                 pillar=ValidationPillar.PERFORMANCE,
@@ -304,19 +285,15 @@ class ScorecardService:
                 remediation="Ajuste target para faixa ideal (50-90%)"
             ),
         ]
-    
+
     def _parse_config(self, config_data: Dict[str, Any], default_rules: List[ValidationRule]) -> ScorecardConfig:
-        """Analisa configuração YAML."""
-        
         rules = []
         rule_map = {r.id: r for r in default_rules}
-        
-        # Atualiza regras padrão com configurações customizadas
+
         if "rules" in config_data:
             for rule_data in config_data["rules"]:
                 rule_id = rule_data.get("id")
                 if rule_id in rule_map:
-                    # Atualiza regra existente
                     rule = rule_map[rule_id]
                     if "enabled" in rule_data:
                         rule.enabled = rule_data["enabled"]
@@ -325,7 +302,6 @@ class ScorecardService:
                     if "severity" in rule_data:
                         rule.severity = ValidationSeverity(rule_data["severity"])
                 else:
-                    # Cria nova regra
                     rule = ValidationRule(
                         id=rule_id,
                         pillar=ValidationPillar(rule_data["pillar"]),
@@ -346,71 +322,59 @@ class ScorecardService:
                         documentation_url=rule_data.get("documentation_url")
                     )
                     rule_map[rule_id] = rule
-        
+
         rules = list(rule_map.values())
-        
-        # Configuração do scorecard
+
         config = ScorecardConfig(rules=rules)
-        
+
         if "notification_thresholds" in config_data:
             thresholds = config_data["notification_thresholds"]
             config.notify_critical_threshold = thresholds.get("critical", 70.0)
             config.notify_error_threshold = thresholds.get("error", 80.0)
             config.notify_warning_threshold = thresholds.get("warning", 90.0)
-        
+
         if "notification_settings" in config_data:
             settings = config_data["notification_settings"]
             config.notification_cooldown_minutes = settings.get("cooldown_minutes", 60)
             config.batch_notifications = settings.get("batch", True)
             config.batch_interval_minutes = settings.get("batch_interval", 15)
-        
+
         if "excluded_namespaces" in config_data:
             config.excluded_namespaces.extend(config_data["excluded_namespaces"])
-        
+
         return config
-    
+
     def evaluate_resource(self, namespace: str, name: str, kind: str = "Deployment") -> ResourceScorecard:
-        """Avalia um recurso e retorna scorecard completo."""
-        
-        # Verifica se está em cache
         cache_key = f"{namespace}/{name}/{kind}"
         if cache_key in self._validation_cache:
             cached = self._validation_cache[cache_key]
             if datetime.now(timezone.utc) - cached.timestamp < self._cache_ttl:
                 self.logger.debug(f"Usando cache para {cache_key}")
                 return cached
-        
-        # Busca recurso do Kubernetes
+
         resource = self._get_resource(namespace, name, kind)
         if not resource:
             raise ValueError(f"Recurso {namespace}/{name}/{kind} não encontrado")
-        
-        # Filtra regras aplicáveis
+
         applicable_rules = [
-            r for r in self.config.rules 
+            r for r in self.config.rules
             if r.enabled and kind in r.applies_to
         ]
-        
-        # Executa validações
+
         validation_results = []
         for rule in applicable_rules:
             result = self._validate_rule(rule, resource, namespace, name)
             validation_results.append(result)
-        
-        # Calcula scores por pilar
+
         pillar_scores = self._calculate_pillar_scores(validation_results)
-        
-        # Calcula score geral
         overall_score = self._calculate_overall_score(pillar_scores)
-        
-        # Conta issues por severidade
+
         critical_issues = sum(1 for r in validation_results if not r.passed and r.severity == ValidationSeverity.CRITICAL)
         error_issues = sum(1 for r in validation_results if not r.passed and r.severity == ValidationSeverity.ERROR)
         warning_issues = sum(1 for r in validation_results if not r.passed and r.severity == ValidationSeverity.WARNING)
         passed_checks = sum(1 for r in validation_results if r.passed)
         total_checks = len(validation_results)
-        
-        # Cria scorecard
+
         scorecard = ResourceScorecard(
             resource_name=name,
             resource_namespace=namespace,
@@ -423,19 +387,15 @@ class ScorecardService:
             passed_checks=passed_checks,
             total_checks=total_checks
         )
-        
-        # Armazena em cache
+
         self._validation_cache[cache_key] = scorecard
-        
-        # Armazena histórico se configurado
+
         if self.config.store_history:
             self._store_history(scorecard)
-        
+
         return scorecard
-    
+
     def _get_resource(self, namespace: str, name: str, kind: str) -> Optional[Dict[str, Any]]:
-        """Busca recurso do Kubernetes."""
-        
         try:
             if kind == "Deployment":
                 resource = self.apps.read_namespaced_deployment(name, namespace)
@@ -455,40 +415,31 @@ class ScorecardService:
         except Exception:
             self.logger.exception(f"Erro ao buscar recurso {namespace}/{name}/{kind}: ")
             return None
-    
-    def _validate_rule(self, rule: ValidationRule, resource: Dict[str, Any], 
+
+    def _validate_rule(self, rule: ValidationRule, resource: Dict[str, Any],
                       namespace: str, name: str) -> ValidationResult:
-        """Executa validação de uma regra específica."""
-        
         validator_name = f"_validate_{rule.id.replace('-', '_').lower()}"
         validator = getattr(self, validator_name, None)
-        
+
         if validator:
             return validator(rule, resource, namespace, name)
         else:
-            # Validação genérica baseada no tipo
             return self._validate_generic(rule, resource, namespace, name)
-    
-    def _validate_generic(self, rule: ValidationRule, resource: Dict[str, Any], 
+
+    def _validate_generic(self, rule: ValidationRule, resource: Dict[str, Any],
                         namespace: str, name: str) -> ValidationResult:
-        """Validação genérica baseada no tipo de regra."""
-        
-        # Extrai valor baseado no ID da regra
         value = self._extract_value_from_resource(rule.id, resource, namespace, name)
-        
+
         passed = False
         message = ""
-        
+
         if rule.rule_type == ValidationRuleType.BOOLEAN:
-            # Para booleanos, consideramos que passa se o valor existe (não é None)
             passed = value is not None
             message = f"{rule.name}: {'✅ Configurado' if passed else '❌ Não configurado'}"
-        
+
         elif rule.rule_type == ValidationRuleType.NUMERIC and value is not None:
             try:
-                # Tenta converter para número
                 if isinstance(value, str):
-                    # Remove unidades como 'm', 'Mi', etc. para CPU/memória
                     if value.endswith('m'):
                         num_value = float(value[:-1]) / 1000
                     elif value.endswith('Mi'):
@@ -499,9 +450,9 @@ class ScorecardService:
                         num_value = float(value)
                 else:
                     num_value = float(value)
-                
+
                 passed = True
-                
+
                 if rule.min_value is not None and num_value < rule.min_value:
                     passed = False
                     message = f"{rule.name}: ❌ Valor {num_value} abaixo do mínimo {rule.min_value}"
@@ -510,11 +461,11 @@ class ScorecardService:
                     message = f"{rule.name}: ❌ Valor {num_value} acima do máximo {rule.max_value}"
                 else:
                     message = f"{rule.name}: ✅ Valor {num_value} dentro da faixa esperada"
-                
+
             except (ValueError, TypeError) as e:
                 passed = False
                 message = f"{rule.name}: ❌ Valor inválido: {value} ({str(e)})"
-        
+
         elif rule.rule_type == ValidationRuleType.ENUM and value is not None:
             if rule.allowed_values:
                 passed = value in rule.allowed_values
@@ -522,7 +473,7 @@ class ScorecardService:
             else:
                 passed = False
                 message = f"{rule.name}: ❌ Lista de valores permitidos não definida"
-        
+
         elif rule.rule_type == ValidationRuleType.REGEX and value is not None:
             if rule.regex_pattern:
                 try:
@@ -534,15 +485,14 @@ class ScorecardService:
             else:
                 passed = False
                 message = f"{rule.name}: ❌ Padrão regex não definido"
-        
+
         else:
-            # Valor não encontrado ou tipo não suportado
             passed = False
             if value is None:
                 message = f"{rule.name}: ❌ Configuração não encontrada"
             else:
                 message = f"{rule.name}: ❌ Não aplicável ou valor não suportado: {type(value).__name__}"
-        
+
         return ValidationResult(
             rule_id=rule.id,
             rule_name=rule.name,
@@ -556,57 +506,34 @@ class ScorecardService:
             remediation=rule.remediation,
             documentation_url=rule.documentation_url
         )
-    
-    def _extract_value_from_resource(self, rule_id: str, resource: Dict[str, Any], 
+
+    def _extract_value_from_resource(self, rule_id: str, resource: Dict[str, Any],
                                 namespace: str, name: str) -> Optional[Any]:
-        """Extrai valor do recurso baseado no ID da regra."""
-        
-        # Mapeamento de regras para caminhos no recurso
         rule_paths = {
-            # Liveness probe
             "RES-001": "spec.template.spec.containers[0].livenessProbe",
-            # Readiness probe
             "RES-002": "spec.template.spec.containers[0].readinessProbe",
-            # CPU requests
             "RES-003": "spec.template.spec.containers[0].resources.requests.cpu",
-            # CPU limits
             "RES-004": "spec.template.spec.containers[0].resources.limits.cpu",
-            # Memory requests
             "RES-005": "spec.template.spec.containers[0].resources.requests.memory",
-            # Memory limits
             "RES-006": "spec.template.spec.containers[0].resources.limits.memory",
-            # HPA configurado (requer consulta adicional)
             "RES-007": self._check_hpa_exists(namespace, name),
-            # HPA com métricas
             "RES-008": self._check_hpa_metrics(namespace, name),
-            # Graceful shutdown
             "RES-009": "spec.template.spec.terminationGracePeriodSeconds",
-            # Container non-root
             "RES-010": "spec.template.spec.containers[0].securityContext.runAsNonRoot",
-            # Pod security context
             "RES-011": "spec.template.spec.securityContext",
-            # NetworkPolicy aplicada
             "RES-012": self._check_network_policy_exists(namespace, name),
-            # Replicas mínimas
             "RES-013": "spec.replicas",
-            # Estratégia de rollout
             "RES-014": "spec.strategy",
-            # Imagem com tag específica
             "SEC-001": "spec.template.spec.containers[0].image",
-            # ReadOnly root filesystem
             "SEC-002": "spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem",
-            # Privilege escalation
             "SEC-003": "spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation",
-            # Capabilities reduzidas
             "SEC-004": "spec.template.spec.containers[0].securityContext.capabilities.drop",
-            # Resource limits adequados
             "PERF-001": self._calculate_limit_ratio(resource),
-            # HPA target adequado
             "PERF-002": self._get_hpa_target(namespace, name),
         }
-        
+
         path_or_func = rule_paths.get(rule_id)
-        
+
         if callable(path_or_func):
             try:
                 return path_or_func()
@@ -621,47 +548,38 @@ class ScorecardService:
                     }
                 )
                 return None
-        
+
         if isinstance(path_or_func, str):
-            # Navega pelo dicionário usando o caminho
             parts = path_or_func.split('.')
             current_value = resource
-            
+
             for part in parts:
                 if current_value is None:
                     return None
-                
-                # Verifica se é acesso a array (ex: containers[0])
+
                 if '[' in part and ']' in part:
                     try:
-                        # Extrai a chave e o índice
                         key_part = part.split('[')[0]
                         index_str = part.split('[')[1].rstrip(']')
-                        
-                        # Verifica se a chave existe
+
                         if not isinstance(current_value, dict) or key_part not in current_value:
                             return None
-                        
-                        # Obtém o array
+
                         array_value = current_value[key_part]
-                        
+
                         if not isinstance(array_value, list):
                             return None
-                        
-                        # Converte o índice para inteiro
+
                         try:
                             index = int(index_str)
                         except ValueError:
-                            # Se não for número, pode ser uma string (ex: containers[name])
-                            # Para simplicidade, vamos assumir que é um índice numérico
                             return None
-                        
-                        # Verifica se o índice está dentro do array
+
                         if index < 0 or index >= len(array_value):
                             return None
-                        
+
                         current_value = array_value[index]
-                        
+
                     except (KeyError, IndexError, TypeError, ValueError) as e:
                         self.logger.debug(
                             f"Erro ao acessar array {part}",
@@ -673,86 +591,78 @@ class ScorecardService:
                             }
                         )
                         return None
-                        
-                # Acesso a dicionário normal
+
                 elif isinstance(current_value, dict) and part in current_value:
                     current_value = current_value[part]
                 else:
-                    # Chave não encontrada
                     return None
-            
+
             return current_value
-        
+
         return None
-    
+
     def _check_hpa_exists(self, namespace: str, deployment_name: str) -> bool:
-        """Verifica se existe HPA para o deployment."""
         try:
             hpas = self.autoscaling_v2.list_namespaced_horizontal_pod_autoscaler(namespace).items
             for hpa in hpas:
-                if (hpa.spec.scale_target_ref.name == deployment_name and 
+                if (hpa.spec.scale_target_ref.name == deployment_name and
                     hpa.spec.scale_target_ref.kind == "Deployment"):
                     return True
             return False
         except Exception:
             return False
-    
+
     def _check_hpa_metrics(self, namespace: str, deployment_name: str) -> bool:
-        """Verifica se HPA tem métricas configuradas."""
         try:
             hpas = self.autoscaling_v2.list_namespaced_horizontal_pod_autoscaler(namespace).items
             for hpa in hpas:
-                if (hpa.spec.scale_target_ref.name == deployment_name and 
+                if (hpa.spec.scale_target_ref.name == deployment_name and
                     hpa.spec.scale_target_ref.kind == "Deployment"):
                     return bool(hpa.spec.metrics)
             return False
         except Exception:
             return False
-    
+
     def _check_network_policy_exists(self, namespace: str, resource_name: str) -> bool:
-        """Verifica se existe NetworkPolicy para o namespace."""
         try:
             policies = self.networking_v1.list_namespaced_network_policy(namespace).items
             return len(policies) > 0
         except Exception:
             return False
-    
+
     def _calculate_limit_ratio(self, resource: Dict[str, Any]) -> Optional[float]:
-        """Calcula ratio entre limits e requests."""
         try:
             containers = resource.get('spec', {}).get('template', {}).get('spec', {}).get('containers', [])
             if not containers:
                 return None
-            
+
             container = containers[0]
             resources = container.get('resources', {})
             requests = resources.get('requests', {})
             limits = resources.get('limits', {})
-            
+
             if 'cpu' in requests and 'cpu' in limits:
-                # Converte para milicores
                 def parse_cpu(cpu_str):
                     if cpu_str.endswith('m'):
                         return float(cpu_str[:-1])
                     else:
                         return float(cpu_str) * 1000
-                
+
                 req_cpu = parse_cpu(requests['cpu'])
                 lim_cpu = parse_cpu(limits['cpu'])
-                
+
                 if req_cpu > 0:
                     return lim_cpu / req_cpu
-            
+
             return None
         except Exception:
             return None
-    
+
     def _get_hpa_target(self, namespace: str, deployment_name: str) -> Optional[float]:
-        """Obtém target do HPA."""
         try:
             hpas = self.autoscaling_v2.list_namespaced_horizontal_pod_autoscaler(namespace).items
             for hpa in hpas:
-                if (hpa.spec.scale_target_ref.name == deployment_name and 
+                if (hpa.spec.scale_target_ref.name == deployment_name and
                     hpa.spec.scale_target_ref.kind == "Deployment"):
                     metrics = hpa.spec.metrics or []
                     for metric in metrics:
@@ -761,22 +671,20 @@ class ScorecardService:
             return None
         except Exception:
             return None
-    
+
     def _calculate_pillar_scores(self, validation_results: List[ValidationResult]) -> Dict[ValidationPillar, PillarScore]:
-        """Calcula scores por pilar."""
-        
         pillar_results = defaultdict(list)
         for result in validation_results:
             pillar_results[result.pillar].append(result)
-        
+
         pillar_scores = {}
         for pillar, results in pillar_results.items():
             total_weight = sum(r.weight for r in results)
             passed_weight = sum(r.weight for r in results if r.passed)
-            
+
             score = (passed_weight / total_weight * 100) if total_weight > 0 else 100.0
             weighted_score = passed_weight
-            
+
             pillar_scores[pillar] = PillarScore(
                 pillar=pillar,
                 score=score,
@@ -786,16 +694,13 @@ class ScorecardService:
                 weighted_score=weighted_score,
                 validation_results=results
             )
-        
+
         return pillar_scores
-    
+
     def _calculate_overall_score(self, pillar_scores: Dict[ValidationPillar, PillarScore]) -> float:
-        """Calcula score geral ponderado."""
-        
         if not pillar_scores:
             return 100.0
-        
-        # Peso padrão por pilar (pode ser configurável)
+
         pillar_weights = {
             ValidationPillar.RESILIENCE: 30.0,
             ValidationPillar.SECURITY: 25.0,
@@ -804,54 +709,49 @@ class ScorecardService:
             ValidationPillar.OPERATIONAL: 10.0,
             ValidationPillar.COST: 10.0,
         }
-        
+
         total_weight = 0.0
         weighted_sum = 0.0
-        
+
         for pillar, score in pillar_scores.items():
             weight = pillar_weights.get(pillar, 10.0)
             total_weight += weight
             weighted_sum += score.score * weight
-        
+
         return weighted_sum / total_weight if total_weight > 0 else 0.0
-    
+
     def _store_history(self, scorecard: ResourceScorecard) -> None:
-        """Armazena histórico do scorecard."""
         try:
             history_key = f"history:{scorecard.resource_namespace}:{scorecard.resource_name}"
             history_str = self.state_store.get(history_key) or "[]"
-            history = eval(history_str)  # Usar json.loads em produção
-            
-            # Adiciona novo scorecard
+            history = eval(history_str)
+
             history.append(scorecard.to_dict())
-            
-            # Mantém apenas os últimos N
+
             if len(history) > self.config.max_history_per_resource:
                 history = history[-self.config.max_history_per_resource:]
-            
+
             self.state_store.set(history_key, str(history))
-            
+
         except Exception:
             self.logger.exception(f"Erro ao armazenar histórico: ")
-    
+
     def get_validation_summary(self, namespace: str) -> Dict[str, Any]:
-        """Retorna resumo de validações para um namespace."""
-        
         deployments = self.apps.list_namespaced_deployment(namespace).items
-        
+
         summary = {
             "namespace": namespace,
             "total_resources": len(deployments),
             "pillar_scores": defaultdict(list),
             "resources": []
         }
-        
+
         for deployment in deployments:
             name = deployment.metadata.name
-            
+
             try:
                 scorecard = self.evaluate_resource(namespace, name, "Deployment")
-                
+
                 summary["resources"].append({
                     "name": name,
                     "overall_score": scorecard.overall_score,
@@ -859,48 +759,41 @@ class ScorecardService:
                     "error_issues": scorecard.error_issues,
                     "warning_issues": scorecard.warning_issues
                 })
-                
+
                 for pillar, pillar_score in scorecard.pillar_scores.items():
                     summary["pillar_scores"][pillar.value].append(pillar_score.score)
-            
+
             except Exception:
                 self.logger.exception(f"Erro ao avaliar deployment {name}: ")
-        
-        # Calcula médias
+
         for pillar, scores in summary["pillar_scores"].items():
             if scores:
                 summary["pillar_scores"][pillar] = sum(scores) / len(scores)
             else:
                 summary["pillar_scores"][pillar] = 0.0
-        
+
         return summary
-    
+
     def should_notify(self, scorecard: ResourceScorecard, last_notification: Optional[datetime] = None) -> bool:
-        """Determina se deve enviar notificação para este scorecard."""
-        
-        # Verifica cooldown
         if last_notification:
             cooldown = timedelta(minutes=self.config.notification_cooldown_minutes)
             if datetime.now(timezone.utc) - last_notification < cooldown:
                 return False
-        
-        # Verifica thresholds
+
         if scorecard.overall_score < self.config.notify_critical_threshold:
             return True
         elif scorecard.critical_issues > 0:
             return True
-        elif scorecard.error_issues > 3:  # Muitos erros
+        elif scorecard.error_issues > 3:
             return True
         elif scorecard.overall_score < self.config.notify_error_threshold and scorecard.error_issues > 0:
             return True
         elif scorecard.overall_score < self.config.notify_warning_threshold and scorecard.warning_issues > 5:
             return True
-        
+
         return False
-    
+
     def get_notification_severity(self, scorecard: ResourceScorecard) -> str:
-        """Determina severidade para notificação."""
-        
         if scorecard.overall_score < self.config.notify_critical_threshold or scorecard.critical_issues > 0:
             return "critical"
         elif scorecard.overall_score < self.config.notify_error_threshold or scorecard.error_issues > 0:
@@ -909,5 +802,3 @@ class ScorecardService:
             return "warning"
         else:
             return "info"
-    
-    

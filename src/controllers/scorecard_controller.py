@@ -72,10 +72,8 @@ class ScorecardController(BaseController):
                 },
             )
 
-            # Persists scorecard in AppScorecard CRD (create or update).
             remediation_pr_meta: Optional[Dict[str, Any]] = None
 
-            # Auto-remediation via GitHub PR (if enabled).
             if self.remediation_service:
                 remediation_pr_meta = await self._maybe_create_remediation_pr(
                     scorecard, ctx, body
@@ -91,13 +89,11 @@ class ScorecardController(BaseController):
                         remediation_pr=remediation_pr_meta,
                     )
                 except Exception:
-                    # CRD write failure must not block the operator loop.
                     self.logger.exception(
                         "Falha ao escrever AppScorecard CRD",
                         extra=ctx,
                     )
 
-            # Buffer scorecard and maybe send namespace digest.
             should_notify = self.scorecard_service.should_notify(scorecard)
             if should_notify:
                 to_send = self._notification_buffer.add_and_maybe_flush(scorecard)
@@ -119,20 +115,12 @@ class ScorecardController(BaseController):
             self.logger.exception("Erro ao processar Deployment", extra=ctx)
             return {"evaluated": False, "error": "Erro ao processar Deployment"}
 
-    # ------------------------------------------------------------------
-    # Auto-remediation
-    # ------------------------------------------------------------------
-
     async def _maybe_create_remediation_pr(
         self,
         scorecard: Any,
         ctx: Dict[str, Any],
         resource_body: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """
-        If there are remediable issues (HPA / resources), create a GitHub PR.
-        Returns PR metadata dict on success, None otherwise.
-        """
         remediable_issues: List[RemediationIssue] = []
 
         for pillar_score in scorecard.pillar_scores.values():
@@ -192,20 +180,12 @@ class ScorecardController(BaseController):
             )
             return None
 
-    # ------------------------------------------------------------------
-    # Remediation audit record
-    # ------------------------------------------------------------------
-
     def _record_remediation(
         self,
         pr_meta: Dict[str, Any],
         ctx: Dict[str, Any],
         deployment_body: Dict[str, Any],
     ) -> None:
-        """
-        Persist an AppRemediation CRD for the given PR.  Non-blocking:
-        failure is logged but never propagates to the caller.
-        """
         try:
             meta = deployment_body.get("metadata", {})
             issues = [
@@ -225,16 +205,11 @@ class ScorecardController(BaseController):
                 extra=ctx,
             )
 
-    # ------------------------------------------------------------------
-    # Namespace digest notification (Decision 3 — C)
-    # ------------------------------------------------------------------
-
     async def _send_namespace_digest(
         self,
         namespace: str,
         scorecards: List[ResourceScorecard],
     ) -> None:
-        """Send a single Slack message summarising all apps in *namespace*."""
         if not self.slack_service or not scorecards:
             return
 
@@ -250,7 +225,6 @@ class ScorecardController(BaseController):
         )
 
         if success and self.appscorecard_writer:
-            # Update notification metadata in each AppScorecard that was included.
             for sc in scorecards:
                 try:
                     self.appscorecard_writer.update_notification(
@@ -259,7 +233,7 @@ class ScorecardController(BaseController):
                         severity=severity.value,
                     )
                 except Exception:
-                    pass  # Non-critical
+                    pass
 
         if success:
             self.logger.info(
@@ -277,12 +251,6 @@ class ScorecardController(BaseController):
         namespace: str,
         scorecards: List[ResourceScorecard],
     ):
-        """
-        Build a compact digest message for all apps in a namespace.
-
-        Returns (title, message, severity).
-        """
-        # Sort: worst first (critical → low score)
         sorted_sc = sorted(
             scorecards,
             key=lambda s: (
@@ -297,7 +265,6 @@ class ScorecardController(BaseController):
         total_errors = sum(s.error_issues for s in sorted_sc)
         total_warnings = sum(s.warning_issues for s in sorted_sc)
 
-        # Overall severity of the digest
         if total_critical > 0 or any(s.overall_score < 70 for s in sorted_sc):
             severity = NotificationSeverity.CRITICAL
             header_emoji = "🔴"
@@ -313,7 +280,6 @@ class ScorecardController(BaseController):
 
         title = f"{header_emoji} Scorecard Digest — namespace: {namespace}"
 
-        # Summary line
         summary_parts = [f"*{total}* app{'s' if total != 1 else ''} avaliado{'s' if total != 1 else ''}"]
         if total_critical:
             summary_parts.append(f"🔴 {total_critical} crítico{'s' if total_critical != 1 else ''}")
@@ -325,7 +291,6 @@ class ScorecardController(BaseController):
 
         lines = [summary_line, ""]
 
-        # Per-app summary rows
         for sc in sorted_sc:
             emoji = self._score_emoji(sc.overall_score)
             name_padded = sc.resource_name[:35].ljust(35)
@@ -342,7 +307,6 @@ class ScorecardController(BaseController):
             issues_str = "  ".join(issue_parts)
             lines.append(f"{emoji} `{name_padded}` {score_str}  {issues_str}")
 
-        # Top critical/error findings across all apps
         top_issues: List[str] = []
         for sc in sorted_sc:
             for ps in sc.pillar_scores.values():
@@ -357,22 +321,16 @@ class ScorecardController(BaseController):
         if top_issues:
             lines += ["", "*Issues críticos/errors:*"] + top_issues[:5]
 
-        # kubectl hint
         lines += [
             "",
             f"`kubectl get appscorecard -n {namespace}`",
         ]
 
         message = "\n".join(lines)
-        # Slack hard limit
         if len(message) > 3000:
             message = message[:2997] + "..."
 
         return title, message, severity
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _score_emoji(self, score: float) -> str:
         if score >= 90:
@@ -397,11 +355,9 @@ class ScorecardController(BaseController):
             return "Crítico"
 
 
-# Singleton global
 scorecard_controller = ScorecardController()
 
 
-# Kopf handlers
 @kopf.on.create("apps", "v1", "deployments")
 async def on_deployment_create(body, **kwargs):
     return await scorecard_controller.on_resource_event(body, event_type="create", **kwargs)

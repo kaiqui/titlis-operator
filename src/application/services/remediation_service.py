@@ -1,20 +1,3 @@
-"""
-Serviço de remediação automática de HPA e Resources.
-
-Fluxo ao detectar issues remediáveis no scorecard:
-  1. Verifica se o Deployment tem a env DD_GIT_REPOSITORY_URL
-     (pré-condição obrigatória — sem ela, remediação não é realizada)
-  2. Extrai owner/repo da URL para identificar o repositório da app
-  3. Verifica idempotência: se já existe um PR aberto para este recurso, aborta
-  4. Adquire trava em memória para evitar execuções concorrentes
-  5. Coleta métricas de profiling (CPU/memória) do Datadog para embasar os valores
-  6. Lê manifests/kubernetes/main/deploy.yaml no repositório da app
-  7. Modifica APENAS as seções necessárias, preservando comentários (ruamel.yaml)
-  8. Cria uma branch a partir da 'develop'
-  9. Commita o deploy.yaml modificado
- 10. Abre Pull Request para 'develop' com categorização e checklist
- 11. Notifica o canal Slack
-"""
 import re
 from datetime import datetime, timezone
 from io import StringIO
@@ -42,12 +25,7 @@ from src.utils.json_logger import get_logger
 logger = get_logger(__name__)
 
 
-# ------------------------------------------------------------------
-# Helpers de parse para comparação de recursos Kubernetes
-# ------------------------------------------------------------------
-
 def _parse_cpu_millicores(value: str) -> int:
-    """Converte string de CPU Kubernetes para millicores (ex: '500m' → 500, '1' → 1000)."""
     v = str(value).strip()
     if v.endswith("m"):
         return int(float(v[:-1]))
@@ -55,7 +33,6 @@ def _parse_cpu_millicores(value: str) -> int:
 
 
 def _parse_memory_mib(value: str) -> int:
-    """Converte string de memória Kubernetes para MiB (ex: '256Mi' → 256, '1Gi' → 1024)."""
     v = str(value).strip()
     if v.endswith("Gi"):
         return int(float(v[:-2]) * 1024)
@@ -67,15 +44,10 @@ def _parse_memory_mib(value: str) -> int:
         return int(float(v[:-1]))
     if v.endswith("Ki"):
         return max(1, int(float(v[:-2]) // 1024))
-    # bytes
     return max(1, int(float(v) / 1_048_576))
 
 
 def _keep_max(current: str, suggested: str, parser) -> str:
-    """Retorna o maior valor entre current e suggested.
-
-    Se o parse falhar por qualquer razão, retorna suggested para não bloquear a remediação.
-    """
     try:
         return suggested if parser(suggested) >= parser(current) else current
     except (ValueError, TypeError):
@@ -83,7 +55,6 @@ def _keep_max(current: str, suggested: str, parser) -> str:
 
 
 def _extract_hpa_utilization(metrics: List[Dict[str, Any]], resource_name: str) -> Optional[int]:
-    """Extrai o averageUtilization atual de uma métrica de HPA por nome de recurso."""
     for m in (metrics or []):
         if m.get("type") == "Resource":
             resource = m.get("resource", {})
@@ -94,35 +65,21 @@ def _extract_hpa_utilization(metrics: List[Dict[str, Any]], resource_name: str) 
     return None
 
 
-# IDs de regras que podem ser remediadas automaticamente
 _HPA_RULE_IDS = frozenset({"RES-007", "RES-008", "PERF-002"})
 _RESOURCE_RULE_IDS = frozenset({"RES-003", "RES-004", "RES-005", "RES-006", "PERF-001"})
 REMEDIABLE_RULE_IDS = _HPA_RULE_IDS | _RESOURCE_RULE_IDS
 
-# Caminho fixo do manifesto no repositório da aplicação
 DEPLOY_YAML_PATH = "manifests/kubernetes/main/deploy.yaml"
-
-# Env var que indica o repositório Git da aplicação (obrigatório para remediação)
 DD_GIT_REPO_ENV = "DD_GIT_REPOSITORY_URL"
 
 
 class RemediationService:
-    """
-    Orquestra a remediação automática de HPA e resources.
-
-    Só atua em Deployments que possuem DD_GIT_REPOSITORY_URL — o valor
-    dessa env indica o repositório que contém os manifestos da aplicação.
-
-    Garante idempotência em duas camadas:
-    - Trava em memória (_pending): evita execuções concorrentes para o mesmo recurso
-    - Verificação de PR existente: antes de criar branch, consulta o GitHub
-    """
 
     def __init__(
         self,
         github_port: GitHubPort,
         slack_service: Optional[SlackNotificationService] = None,
-        datadog_repository: Optional[Any] = None,  # DatadogRepository
+        datadog_repository: Optional[Any] = None,
         remediation_settings: Optional[RemediationSettings] = None,
     ) -> None:
         self._github = github_port
@@ -130,23 +87,11 @@ class RemediationService:
         self._datadog = datadog_repository
         self._remediation_settings = remediation_settings or RemediationSettings()
         self.logger = get_logger(self.__class__.__name__)
-        # Trava em memória: evita execuções concorrentes para o mesmo recurso
         self._pending: Set[str] = set()
-
-    # ------------------------------------------------------------------
-    # Ponto de entrada principal
-    # ------------------------------------------------------------------
 
     async def create_remediation_pr(
         self, request: RemediationRequest
     ) -> RemediationResult:
-        """
-        Executa o fluxo completo de remediação para o recurso informado.
-
-        Retorna RemediationResult com success=True e dados do PR criado,
-        ou success=False com mensagem de erro descritivo.
-        """
-        # 1. Valida pré-condição: DD_GIT_REPOSITORY_URL obrigatório
         repo_info = self._extract_git_repo(request.resource_body)
         if not repo_info:
             self.logger.info(
@@ -163,7 +108,6 @@ class RemediationService:
 
         repo_owner, repo_name = repo_info
 
-        # 2. Trava em memória: evita execuções concorrentes para o mesmo recurso
         resource_key = self._resource_key(
             repo_owner, repo_name, request.namespace, request.resource_name
         )
@@ -177,7 +121,6 @@ class RemediationService:
                 error=f"Remediacao ja em andamento para '{resource_key}'",
             )
 
-        # 3. Idempotência: verifica se já existe um PR aberto para este recurso
         existing_pr = await self._github.find_open_remediation_pr(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -215,7 +158,6 @@ class RemediationService:
         repo_owner: str,
         repo_name: str,
     ) -> RemediationResult:
-        """Executa as etapas de remediação após validação de idempotência."""
         self.logger.info(
             "Remediacao iniciada",
             extra={
@@ -227,10 +169,8 @@ class RemediationService:
             },
         )
 
-        # 4. Coleta métricas do Datadog (opcional — falha silenciosa)
         metrics = self._fetch_profiling_metrics(request.resource_name, request.namespace)
 
-        # 5. Lê o deploy.yaml atual do repositório
         current_content = await self._github.get_file_content(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -238,7 +178,6 @@ class RemediationService:
             ref=request.base_branch,
         )
 
-        # 6. Gera o conteúdo modificado do deploy.yaml
         modified_content, categories = self._modify_deploy_yaml(
             content=current_content or "",
             issues=request.issues,
@@ -261,7 +200,6 @@ class RemediationService:
             commit_message=self._build_commit_message(request, categories),
         )
 
-        # 7. Cria branch a partir da develop
         created = await self._github.create_branch(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -275,7 +213,6 @@ class RemediationService:
                 error=f"Falha ao criar branch '{branch_name}'",
             )
 
-        # 8. Commita o deploy.yaml modificado
         committed = await self._github.commit_files(
             repo_owner=repo_owner,
             repo_name=repo_name,
@@ -289,7 +226,6 @@ class RemediationService:
                 error="Falha ao commitar as modificacoes no deploy.yaml",
             )
 
-        # 9. Cria PR para develop
         try:
             pr = await self._github.create_pull_request(
                 repo_owner=repo_owner,
@@ -309,7 +245,6 @@ class RemediationService:
 
         pr.issues_fixed = [i.rule_id for i in request.issues]
 
-        # 10. Notifica no Slack
         await self._notify_slack(request, pr, categories, metrics)
 
         self.logger.info(
@@ -318,17 +253,9 @@ class RemediationService:
         )
         return RemediationResult(success=True, pull_request=pr, branch_name=branch_name)
 
-    # ------------------------------------------------------------------
-    # Extração de informações do Deployment
-    # ------------------------------------------------------------------
-
     def _extract_git_repo(
         self, resource_body: Dict[str, Any]
     ) -> Optional[Tuple[str, str]]:
-        """
-        Procura DD_GIT_REPOSITORY_URL nas envs de todos os containers.
-        Retorna (owner, repo) ou None.
-        """
         containers: List[Dict[str, Any]] = (
             resource_body.get("spec", {})
             .get("template", {})
@@ -346,12 +273,6 @@ class RemediationService:
 
     @staticmethod
     def _parse_github_url(url: str) -> Optional[Tuple[str, str]]:
-        """
-        Extrai (owner, repo) de URLs no formato:
-          - https://github.com/owner/repo
-          - https://github.com/owner/repo.git
-          - git@github.com:owner/repo.git
-        """
         url = url.strip().rstrip("/").removesuffix(".git")
         match = re.search(r"github\.com[/:]([^/]+)/([^/]+)$", url)
         if match:
@@ -362,17 +283,11 @@ class RemediationService:
     def _resource_key(
         repo_owner: str, repo_name: str, namespace: str, resource_name: str
     ) -> str:
-        """Chave única para identificar um recurso sendo processado."""
         return f"{repo_owner}/{repo_name}:{namespace}/{resource_name}"
-
-    # ------------------------------------------------------------------
-    # Métricas Datadog
-    # ------------------------------------------------------------------
 
     def _fetch_profiling_metrics(
         self, deployment_name: str, namespace: str
     ) -> Optional[DatadogProfilingMetrics]:
-        """Coleta métricas de CPU e memória do Datadog. Falha silenciosa."""
         if not self._datadog:
             return None
         try:
@@ -384,10 +299,6 @@ class RemediationService:
             )
             return None
 
-    # ------------------------------------------------------------------
-    # Modificação precisa do deploy.yaml (preserva comentários)
-    # ------------------------------------------------------------------
-
     def _modify_deploy_yaml(
         self,
         content: str,
@@ -397,21 +308,12 @@ class RemediationService:
         namespace: str,
         resource_kind: str,
     ) -> Tuple[str, List[str]]:
-        """
-        Modifica manifests/kubernetes/main/deploy.yaml preservando comentários.
-
-        Usa ruamel.yaml para editar apenas os campos necessários:
-        - resources.requests/limits nos containers (issues de Resources)
-        - HPA document (issues de HPA) — atualiza ou acrescenta ao final do arquivo
-
-        Retorna (conteúdo_modificado, lista_de_categorias).
-        """
         try:
             from ruamel.yaml import YAML
 
             ryaml = YAML()
             ryaml.preserve_quotes = True
-            ryaml.width = 10_000  # evita quebra de linhas longas
+            ryaml.width = 10_000
 
             documents: List[Any] = []
             if content:
@@ -423,7 +325,6 @@ class RemediationService:
             resource_issues = [i for i in issues if i.rule_id in _RESOURCE_RULE_IDS]
             categories: List[str] = []
 
-            # Encontra o documento Deployment e HPA (se existir)
             deployment_doc = next(
                 (d for d in documents if d.get("kind") == "Deployment"), None
             )
@@ -432,7 +333,6 @@ class RemediationService:
                 None,
             )
 
-            # ----- Modifica resources no exato lugar -----
             if resource_issues and deployment_doc is not None:
                 containers = (
                     deployment_doc.get("spec", {})
@@ -453,14 +353,11 @@ class RemediationService:
                     s = self._remediation_settings
                     dm = metrics or DatadogProfilingMetrics()
 
-                    # Valores sugeridos — usam defaults do settings quando Datadog
-                    # não retornou dados efetivos para a aplicação
                     suggested_cpu_req = dm.suggest_cpu_request(default=s.default_cpu_request)
                     suggested_cpu_lim = dm.suggest_cpu_limit(default=s.default_cpu_limit)
                     suggested_mem_req = dm.suggest_memory_request(default=s.default_memory_request)
                     suggested_mem_lim = dm.suggest_memory_limit(default=s.default_memory_limit)
 
-                    # Garantia: nunca reduzir valores já configurados no manifesto
                     res["requests"]["cpu"] = _keep_max(
                         res["requests"].get("cpu", "0m"), suggested_cpu_req, _parse_cpu_millicores
                     )
@@ -476,19 +373,15 @@ class RemediationService:
 
                     categories.append("resources")
 
-            # ----- Modifica / adiciona HPA -----
             if hpa_issues:
                 s = self._remediation_settings
                 if hpa_doc is not None:
                     spec = hpa_doc.setdefault("spec", {})
 
-                    # Garantia: nunca reduzir minReplicas nem maxReplicas já configurados
                     spec["minReplicas"] = max(spec.get("minReplicas", 0), s.hpa_min_replicas)
                     spec["maxReplicas"] = max(spec.get("maxReplicas", 0), s.hpa_max_replicas)
 
-                    # Utilization: target menor = scaling mais agressivo = melhor.
-                    # Se o valor atual já é menor que o default, é intencional — preservar.
-                    # Se é maior (menos agressivo) ou inexistente, usar o default.
+                    # Target menor = scaling mais agressivo = melhor; preservar se já < default
                     current_metrics = spec.get("metrics", [])
                     current_cpu_util = _extract_hpa_utilization(current_metrics, "cpu")
                     current_mem_util = _extract_hpa_utilization(current_metrics, "memory")
@@ -505,7 +398,6 @@ class RemediationService:
                     spec["metrics"] = self._build_hpa_metrics_yaml(cpu_util, mem_util)
                     categories.append("hpa-update")
                 else:
-                    # Serializa documentos existentes, depois appenda HPA com defaults do settings
                     import yaml as stdlib_yaml
 
                     hpa_manifest = self._build_hpa_manifest_dict(
@@ -596,10 +488,6 @@ class RemediationService:
             },
         }
 
-    # ------------------------------------------------------------------
-    # Helpers de branch / commit / PR
-    # ------------------------------------------------------------------
-
     def _build_branch_name(self, request: RemediationRequest) -> str:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
         safe_name = request.resource_name.replace("/", "-")
@@ -632,7 +520,6 @@ class RemediationService:
         now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         dm = metrics or DatadogProfilingMetrics()
 
-        # Tabela de categorias
         cat_rows: List[str] = []
         for cat in categories:
             rules = (
@@ -648,7 +535,6 @@ class RemediationService:
             )
         categories_table = "\n".join(cat_rows) if cat_rows else "| — | — | — |"
 
-        # Métricas Datadog
         if metrics:
             metrics_table = (
                 "| Metrica | Media (1h) | Request Sugerido | Limit Sugerido |\n"
@@ -664,7 +550,6 @@ class RemediationService:
                 "> Revise e ajuste conforme o uso real da aplicacao."
             )
 
-        # Lista de issues
         issues_md = "\n".join(
             f"- **{i.rule_id}** — {i.rule_name}: {i.description}"
             for i in request.issues
@@ -697,10 +582,6 @@ class RemediationService:
             f"*Baseado em metricas de profiling coletadas do Datadog*"
         )
 
-    # ------------------------------------------------------------------
-    # Notificação Slack
-    # ------------------------------------------------------------------
-
     async def _notify_slack(
         self,
         request: RemediationRequest,
@@ -708,7 +589,6 @@ class RemediationService:
         categories: List[str],
         metrics: Optional[DatadogProfilingMetrics],
     ) -> None:
-        """Envia notificação no Slack após a criação do PR."""
         if not self._slack or not self._slack.is_enabled():
             return
 

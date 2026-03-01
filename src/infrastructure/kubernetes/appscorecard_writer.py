@@ -1,17 +1,3 @@
-"""
-infrastructure/kubernetes/appscorecard_writer.py
-
-Creates and updates AppScorecard CRDs in Kubernetes.
-Each Deployment gets one AppScorecard (same name, same namespace).
-The AppScorecard carries an ownerReference to its Deployment so that
-Kubernetes garbage-collects it automatically when the Deployment is deleted.
-
-Idempotency strategy:
-  - GET the existing object.
-  - If 404 → CREATE (first evaluation for this resource).
-  - Otherwise → replace spec/labels, then patch status subresource.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -32,17 +18,8 @@ logger = get_logger(__name__)
 
 
 class AppScorecardWriter:
-    """
-    Manages the lifecycle of AppScorecard custom resources.
-
-    All methods are synchronous because the Kubernetes Python client's
-    CustomObjectsApi is synchronous. The Kopf framework runs handlers in a
-    thread pool for blocking calls, so this is safe to call from async handlers
-    via asyncio.get_event_loop().run_in_executor or directly (Kopf handles it).
-    """
 
     def __init__(self) -> None:
-        # Lazy-initialised so unit tests can be written without a live cluster.
         self._api: Optional[client.CustomObjectsApi] = None
 
     @property
@@ -51,10 +28,6 @@ class AppScorecardWriter:
             self._api = client.CustomObjectsApi()
         return self._api
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
     def upsert(
         self,
         scorecard: ResourceScorecard,
@@ -62,17 +35,6 @@ class AppScorecardWriter:
         enriched: Optional[EnrichedScorecard] = None,
         remediation_pr: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Create or update the AppScorecard for the given resource.
-
-        Args:
-            scorecard: Base scorecard computed by ScorecardService.
-            deployment_body: Raw Deployment manifest (kopf body). Used to build
-                             ownerReferences so GC is automatic on deletion.
-            enriched: Optional enriched scorecard with Backstage / CAST AI data.
-            remediation_pr: Optional dict with GitHub PR metadata, produced by
-                            RemediationService after a PR is created.
-        """
         namespace = scorecard.resource_namespace
         name = scorecard.resource_name
 
@@ -111,10 +73,6 @@ class AppScorecardWriter:
         name: str,
         severity: str,
     ) -> None:
-        """
-        Patch the notification section of an existing AppScorecard status.
-        Called after a Slack digest is successfully sent.
-        """
         try:
             existing = self._custom_api.get_namespaced_custom_object(
                 group=GROUP,
@@ -139,16 +97,10 @@ class AppScorecardWriter:
                 body=existing,
             )
         except ApiException:
-            # Non-critical: notification metadata update failure should not
-            # block or raise.
             logger.warning(
                 "Falha ao atualizar notification status no AppScorecard",
                 extra={"resource_name": name, "namespace": namespace},
             )
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _create(self, body: Dict[str, Any], namespace: str, name: str) -> None:
         self._custom_api.create_namespaced_custom_object(
@@ -166,7 +118,6 @@ class AppScorecardWriter:
         namespace: str,
         name: str,
     ) -> None:
-        # 1. Replace metadata labels and spec (keeps resourceVersion intact).
         existing["metadata"]["labels"] = new_body["metadata"].get("labels", {})
         existing["spec"] = new_body["spec"]
         self._custom_api.replace_namespaced_custom_object(
@@ -178,7 +129,6 @@ class AppScorecardWriter:
             body=existing,
         )
 
-        # 2. Fetch fresh copy (resourceVersion updated) then replace status.
         refreshed = self._custom_api.get_namespaced_custom_object(
             group=GROUP,
             version=VERSION,
@@ -258,13 +208,11 @@ class AppScorecardWriter:
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
 
-        # Compliance is non_compliant if any error/critical issue exists.
         if scorecard.critical_issues > 0 or scorecard.error_issues > 0 or scorecard.overall_score < 80:
             compliance = "non_compliant"
         else:
             compliance = "compliant"
 
-        # All findings (pass + fail) — Decision 2: B
         findings: List[Dict[str, Any]] = []
         for pillar_score in scorecard.pillar_scores.values():
             for result in pillar_score.validation_results:
@@ -292,7 +240,6 @@ class AppScorecardWriter:
                     }
                 )
 
-        # Pillar scores summary
         pillars: Dict[str, Any] = {}
         for pillar, ps in scorecard.pillar_scores.items():
             pillars[pillar.value] = {
@@ -327,7 +274,6 @@ class AppScorecardWriter:
             ],
         }
 
-        # Backstage enrichment (optional)
         if enriched:
             status["backstage"] = {
                 "entityRef": enriched.backstage.entity_ref,
@@ -347,7 +293,6 @@ class AppScorecardWriter:
                 "rightsizingRecommendations": enriched.cost.rightsizing_recommendations,
             }
 
-        # GitHub remediation PR (optional)
         if remediation_pr:
             status["remediation"] = remediation_pr
 

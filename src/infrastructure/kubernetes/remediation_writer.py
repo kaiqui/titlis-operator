@@ -1,19 +1,3 @@
-"""
-infrastructure/kubernetes/remediation_writer.py
-
-Creates AppRemediation CRDs to record every GitHub PR produced by the
-auto-remediation flow.  One AppRemediation per PR, named:
-
-    {deployment-name}-{yyyyMMddHHmmss}
-
-The resource is owned by the Deployment so Kubernetes GC deletes it
-automatically when the parent Deployment is removed.
-
-Idempotency: creation is best-effort (one PR → one CRD).  If the write
-fails the remediation itself is not rolled back — only the audit record
-is missing.  The caller must log the failure but must NOT raise.
-"""
-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -32,11 +16,6 @@ logger = get_logger(__name__)
 
 
 class RemediationWriter:
-    """
-    Manages the lifecycle of AppRemediation custom resources.
-
-    Synchronous, same rationale as AppScorecardWriter.
-    """
 
     def __init__(self) -> None:
         self._api: Optional[client.CustomObjectsApi] = None
@@ -47,10 +26,6 @@ class RemediationWriter:
             self._api = client.CustomObjectsApi()
         return self._api
 
-    # ------------------------------------------------------------------
-    # Public interface
-    # ------------------------------------------------------------------
-
     def record(
         self,
         namespace: str,
@@ -59,24 +34,6 @@ class RemediationWriter:
         pr_meta: Dict[str, Any],
         issues: List[Dict[str, str]],
     ) -> str:
-        """
-        Persist an AppRemediation CRD for a successfully created GitHub PR.
-
-        Args:
-            namespace:        Deployment namespace.
-            deployment_name:  Deployment name (also used as label + targetRef).
-            deployment_uid:   Deployment UID for ownerReference.
-            pr_meta:          Dict with keys prNumber, prUrl, prBranch, createdAt,
-                              issuesFixed (list of rule IDs).
-            issues:           List of {"ruleId": ..., "ruleName": ..., "category": ...}
-                              for the spec.issuesFixed field.
-
-        Returns:
-            Name of the created AppRemediation resource.
-
-        Raises:
-            ApiException if the Kubernetes API call fails.
-        """
         now = datetime.now(timezone.utc)
         resource_name = f"{deployment_name}-{now.strftime('%Y%m%d%H%M%S')}"
 
@@ -107,14 +64,9 @@ class RemediationWriter:
             },
         )
 
-        # Patch the status subresource (CRD has status: {} subresource).
         self._patch_status(resource_name, namespace, body["status"])
 
         return resource_name
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
 
     def _patch_status(
         self,

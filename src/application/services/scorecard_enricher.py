@@ -1,22 +1,3 @@
-"""
-application/services/scorecard_enricher.py
-
-Orquestrador que combina ResourceScorecard + BackstageProfile + CostProfile
-num EnrichedScorecard, e mantém um store em memória para consulta sob demanda.
-
-Não há dependência de banco de dados. O estado é mantido no processo
-e reconstruído automaticamente a cada evento Kubernetes.
-
-Store:
-  - Por serviço/namespace  → último scorecard enriquecido
-  - Por squad              → índice de todos os serviços do squad
-
-Acesso:
-  store.get(namespace, name)          → EnrichedScorecard | None
-  store.get_by_squad(squad)           → List[EnrichedScorecard]
-  store.squad_summary(squad)          → Dict com métricas agregadas
-  store.all()                         → List[EnrichedScorecard]
-"""
 from __future__ import annotations
 
 from collections import defaultdict
@@ -34,31 +15,17 @@ from src.infrastructure.castai.cost_enricher import CastaiCostEnricher
 from src.utils.json_logger import get_logger
 
 
-# ---------------------------------------------------------------------------
-# Store em memória
-# ---------------------------------------------------------------------------
-
 class ScorecardsStore:
-    """
-    Store em memória de EnrichedScorecards.
-
-    Thread-safety: operações são atômicas em CPython (GIL) para dicionários.
-    Para produção com workers async, proteger com asyncio.Lock se necessário.
-    """
 
     def __init__(self) -> None:
-        # Chave: "namespace/name"
         self._store: Dict[str, EnrichedScorecard] = {}
-        # Índice invertido: squad → set de chaves
         self._squad_index: Dict[str, set] = defaultdict(set)
         self.logger = get_logger(self.__class__.__name__)
 
     def upsert(self, enriched: EnrichedScorecard) -> None:
-        """Insere ou atualiza um EnrichedScorecard no store."""
         key = f"{enriched.namespace}/{enriched.service_name}"
         old = self._store.get(key)
 
-        # Remove do índice de squad anterior, se mudou
         if old and old.squad != enriched.squad:
             self._squad_index[old.squad].discard(key)
 
@@ -76,7 +43,6 @@ class ScorecardsStore:
         )
 
     def remove(self, namespace: str, name: str) -> None:
-        """Remove entrada do store (ex: deployment deletado)."""
         key = f"{namespace}/{name}"
         entry = self._store.pop(key, None)
         if entry:
@@ -95,15 +61,7 @@ class ScorecardsStore:
     def squads(self) -> List[str]:
         return [s for s, keys in self._squad_index.items() if keys]
 
-    # ------------------------------------------------------------------
-    # Agregações
-    # ------------------------------------------------------------------
-
     def squad_summary(self, squad: str) -> Dict[str, Any]:
-        """
-        Resumo agregado de um squad: score médio, custo total,
-        serviços críticos, savings potenciais.
-        """
         services = self.get_by_squad(squad)
         if not services:
             return {"squad": squad, "services_count": 0}
@@ -127,7 +85,6 @@ class ScorecardsStore:
         }
 
     def platform_summary(self) -> Dict[str, Any]:
-        """Visão executiva de toda a plataforma."""
         all_services = self.all()
         if not all_services:
             return {"services_count": 0}
@@ -151,17 +108,7 @@ class ScorecardsStore:
         }
 
 
-# ---------------------------------------------------------------------------
-# Orquestrador
-# ---------------------------------------------------------------------------
-
 class ScorecardEnricher:
-    """
-    Orquestra o enriquecimento de um ResourceScorecard com dados de
-    Backstage e CAST AI, produzindo um EnrichedScorecard.
-
-    Armazena o resultado no ScorecardsStore para consulta sob demanda.
-    """
 
     def __init__(
         self,
@@ -174,26 +121,16 @@ class ScorecardEnricher:
         self._castai = castai_enricher
         self.logger = get_logger(self.__class__.__name__)
 
-    # ------------------------------------------------------------------
-    # API pública
-    # ------------------------------------------------------------------
-
     def enrich_and_store(self, scorecard: ResourceScorecard) -> EnrichedScorecard:
-        """
-        Enriquece um scorecard com dados de Backstage e CAST AI,
-        persiste no store e retorna o EnrichedScorecard.
-        """
         name = scorecard.resource_name
         namespace = scorecard.resource_namespace
 
-        # Backstage
         backstage_profile = (
             self._backstage.get_profile(name, namespace)
             if self._backstage
             else BackstageProfile.unknown(name)
         )
 
-        # CAST AI — só enriquece se scorecard_enabled no Backstage
         cost_profile = CostProfile.unavailable()
         if self._castai and backstage_profile.scorecard_enabled:
             cost_profile = self._castai.get_cost_profile(name, namespace)
@@ -228,15 +165,7 @@ class ScorecardEnricher:
     def store(self) -> ScorecardsStore:
         return self._store
 
-    # ------------------------------------------------------------------
-    # Formatação de notificações Slack enriquecidas
-    # ------------------------------------------------------------------
-
     def format_slack_message(self, enriched: EnrichedScorecard) -> str:
-        """
-        Monta a mensagem Slack para um scorecard enriquecido.
-        Mantém o formato original e adiciona bloco de custo/ownership.
-        """
         summary = enriched.to_slack_summary()
         sc = enriched.scorecard
 
@@ -248,7 +177,6 @@ class ScorecardEnricher:
             f"*Score:* {summary['score_emoji']} {summary['score']}\n\n"
         )
 
-        # Issues
         if sc.critical_issues:
             msg += f"🔴 *Issues Críticas:* {sc.critical_issues}\n"
         if sc.error_issues:
@@ -257,7 +185,6 @@ class ScorecardEnricher:
             msg += f"⚠️ *Warnings:* {sc.warning_issues}\n"
         msg += f"✅ *Checks Passados:* {sc.passed_checks}/{sc.total_checks}\n\n"
 
-        # Bloco de custo (novo)
         if enriched.cost.monthly_cost_usd > 0:
             msg += "*💰 CUSTO (CAST AI)*\n"
             msg += f"• Custo mensal: *{summary['monthly_cost_usd']}*\n"
@@ -273,7 +200,6 @@ class ScorecardEnricher:
                     msg += f"  • {rec}\n"
             msg += "\n"
 
-        # Detalhes por pilar (mantém formato original)
         msg += "*🏛️ DETALHES POR PILAR:*\n"
         for pillar, pillar_score in sc.pillar_scores.items():
             emoji_map = {
@@ -299,10 +225,6 @@ class ScorecardEnricher:
         return msg[:3000]
 
     def format_squad_slack_message(self, squad: str) -> str:
-        """
-        Formata um resumo agregado de squad para envio no Slack.
-        Útil para relatórios periódicos.
-        """
         summary = self._store.squad_summary(squad)
         if summary.get("services_count", 0) == 0:
             return f"*Squad {squad}*: sem dados disponíveis."
