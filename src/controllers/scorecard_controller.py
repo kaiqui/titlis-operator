@@ -358,6 +358,11 @@ class ScorecardController(BaseController):
 scorecard_controller = ScorecardController()
 
 
+@kopf.on.resume("apps", "v1", "deployments")
+async def on_deployment_resume(body, **kwargs):
+    return await scorecard_controller.on_resource_event(body, event_type="resume", **kwargs)
+
+
 @kopf.on.create("apps", "v1", "deployments")
 async def on_deployment_create(body, **kwargs):
     return await scorecard_controller.on_resource_event(body, event_type="create", **kwargs)
