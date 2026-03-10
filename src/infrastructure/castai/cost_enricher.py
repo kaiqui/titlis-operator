@@ -131,7 +131,9 @@ class CastaiCostEnricher:
         workload_data = self._fetch_workload_cost(workload_name, namespace)
 
         # 2. Recomendações de rightsizing
-        recommendations = self._fetch_rightsizing_recommendations(workload_name, namespace)
+        recommendations = self._fetch_rightsizing_recommendations(
+            workload_name, namespace
+        )
 
         if not workload_data:
             self.logger.info(
@@ -142,7 +144,9 @@ class CastaiCostEnricher:
 
         # Extrai métricas de utilização dos containers
         containers = workload_data.get("containers", [])
-        cpu_req, cpu_used, mem_req, mem_used = self._aggregate_container_metrics(containers)
+        cpu_req, cpu_used, mem_req, mem_used = self._aggregate_container_metrics(
+            containers
+        )
 
         profile = CostProfile(
             monthly_cost_usd=round(workload_data.get("totalCost", 0.0), 4),
@@ -189,7 +193,10 @@ class CastaiCostEnricher:
         items = data.get("items", data if isinstance(data, list) else [])
         # O endpoint pode retornar lista; pega o match exato pelo nome
         for item in items:
-            if item.get("name") == workload_name or item.get("workloadName") == workload_name:
+            if (
+                item.get("name") == workload_name
+                or item.get("workloadName") == workload_name
+            ):
                 return item
         return items[0] if items else None
 
@@ -259,10 +266,18 @@ class CastaiCostEnricher:
         for c in containers:
             resources = c.get("resources", {})
 
-            _cpu_req = resources.get("cpuRequestMillicores") or resources.get("cpuRequest")
-            _cpu_used = resources.get("cpuUsageAvgMillicores") or resources.get("cpuUsage")
-            _mem_req = resources.get("memoryRequestMiB") or resources.get("memoryRequest")
-            _mem_used = resources.get("memoryUsageAvgMiB") or resources.get("memoryUsage")
+            _cpu_req = resources.get("cpuRequestMillicores") or resources.get(
+                "cpuRequest"
+            )
+            _cpu_used = resources.get("cpuUsageAvgMillicores") or resources.get(
+                "cpuUsage"
+            )
+            _mem_req = resources.get("memoryRequestMiB") or resources.get(
+                "memoryRequest"
+            )
+            _mem_used = resources.get("memoryUsageAvgMiB") or resources.get(
+                "memoryUsage"
+            )
 
             if _cpu_req is not None:
                 cpu_req = (cpu_req or 0) + float(_cpu_req)

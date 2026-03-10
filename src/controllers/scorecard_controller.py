@@ -13,12 +13,13 @@ from src.domain.github_models import RemediationIssue, RemediationRequest
 from src.domain.slack_models import NotificationChannel, NotificationSeverity
 from src.domain.models import ResourceScorecard
 from src.application.services.remediation_service import REMEDIABLE_RULE_IDS
-from src.application.services.namespace_notification_buffer import NamespaceNotificationBuffer
+from src.application.services.namespace_notification_buffer import (
+    NamespaceNotificationBuffer,
+)
 from src.settings import settings
 
 
 class ScorecardController(BaseController):
-
     def __init__(self) -> None:
         super().__init__("scorecard")
         self.scorecard_service = get_scorecard_service()
@@ -48,7 +49,10 @@ class ScorecardController(BaseController):
                 f"Ignorando Deployment no namespace excluído: {namespace}",
                 extra=ctx,
             )
-            return {"ignored": True, "reason": f"Namespace {namespace} está na lista de exclusão"}
+            return {
+                "ignored": True,
+                "reason": f"Namespace {namespace} está na lista de exclusão",
+            }
 
         self.logger.info(f"Deployment {event_type}", extra=ctx)
 
@@ -280,13 +284,21 @@ class ScorecardController(BaseController):
 
         title = f"{header_emoji} Scorecard Digest — namespace: {namespace}"
 
-        summary_parts = [f"*{total}* app{'s' if total != 1 else ''} avaliado{'s' if total != 1 else ''}"]
+        summary_parts = [
+            f"*{total}* app{'s' if total != 1 else ''} avaliado{'s' if total != 1 else ''}"
+        ]
         if total_critical:
-            summary_parts.append(f"🔴 {total_critical} crítico{'s' if total_critical != 1 else ''}")
+            summary_parts.append(
+                f"🔴 {total_critical} crítico{'s' if total_critical != 1 else ''}"
+            )
         if total_errors:
-            summary_parts.append(f"❌ {total_errors} erro{'s' if total_errors != 1 else ''}")
+            summary_parts.append(
+                f"❌ {total_errors} erro{'s' if total_errors != 1 else ''}"
+            )
         if total_warnings:
-            summary_parts.append(f"⚠️ {total_warnings} warning{'s' if total_warnings != 1 else ''}")
+            summary_parts.append(
+                f"⚠️ {total_warnings} warning{'s' if total_warnings != 1 else ''}"
+            )
         summary_line = " | ".join(summary_parts)
 
         lines = [summary_line, ""]
@@ -360,17 +372,23 @@ scorecard_controller = ScorecardController()
 
 @kopf.on.resume("apps", "v1", "deployments")
 async def on_deployment_resume(body, **kwargs):
-    return await scorecard_controller.on_resource_event(body, event_type="resume", **kwargs)
+    return await scorecard_controller.on_resource_event(
+        body, event_type="resume", **kwargs
+    )
 
 
 @kopf.on.create("apps", "v1", "deployments")
 async def on_deployment_create(body, **kwargs):
-    return await scorecard_controller.on_resource_event(body, event_type="create", **kwargs)
+    return await scorecard_controller.on_resource_event(
+        body, event_type="create", **kwargs
+    )
 
 
 @kopf.on.update("apps", "v1", "deployments")
 async def on_deployment_update(body, **kwargs):
-    return await scorecard_controller.on_resource_event(body, event_type="update", **kwargs)
+    return await scorecard_controller.on_resource_event(
+        body, event_type="update", **kwargs
+    )
 
 
 @kopf.on.delete("apps", "v1", "deployments")

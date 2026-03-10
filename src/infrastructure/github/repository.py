@@ -108,7 +108,9 @@ class GitHubRepository(GitHubPort):
             )
             return None
         except Exception:
-            logger.exception("Erro ao ler conteúdo do arquivo", extra={"path": file_path})
+            logger.exception(
+                "Erro ao ler conteúdo do arquivo", extra={"path": file_path}
+            )
             return None
 
     async def commit_files(

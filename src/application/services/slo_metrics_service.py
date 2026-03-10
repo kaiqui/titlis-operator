@@ -39,6 +39,7 @@ from src.utils.json_logger import get_logger
 # Enumerações de suporte — mantêm os valores de tag previsíveis e finitos
 # ---------------------------------------------------------------------------
 
+
 class SLOAction(str, Enum):
     CREATED = "created"
     UPDATED = "updated"
@@ -86,10 +87,16 @@ class SLOMetricsService:
     # Conjunto fechado de namespaces permitidos como tag.
     # Se o namespace não estiver na lista, usa "other" para evitar cardinalidade
     # irrestrita caso novos namespaces apareçam dinamicamente.
-    _ALLOWED_NAMESPACE_TAGS: frozenset[str] = frozenset({
-        "default", "production", "staging", "develop",
-        "titlis-system", "kube-system",
-    })
+    _ALLOWED_NAMESPACE_TAGS: frozenset[str] = frozenset(
+        {
+            "default",
+            "production",
+            "staging",
+            "develop",
+            "titlis-system",
+            "kube-system",
+        }
+    )
 
     def __init__(
         self,
@@ -157,7 +164,9 @@ class SLOMetricsService:
         ]
 
         if success:
-            series.append(self._make_count(_METRIC_RECONCILIATION_SUCCESS, now, 1, tags))
+            series.append(
+                self._make_count(_METRIC_RECONCILIATION_SUCCESS, now, 1, tags)
+            )
         else:
             series.append(self._make_count(_METRIC_RECONCILIATION_ERROR, now, 1, tags))
 
@@ -205,7 +214,9 @@ class SLOMetricsService:
         return tags
 
     @staticmethod
-    def _make_count(name: str, timestamp: int, value: float, tags: list[str]) -> MetricSeries:
+    def _make_count(
+        name: str, timestamp: int, value: float, tags: list[str]
+    ) -> MetricSeries:
         return MetricSeries(
             metric=name,
             type=MetricIntakeType.COUNT,
@@ -214,7 +225,9 @@ class SLOMetricsService:
         )
 
     @staticmethod
-    def _make_gauge(name: str, timestamp: int, value: float, tags: list[str]) -> MetricSeries:
+    def _make_gauge(
+        name: str, timestamp: int, value: float, tags: list[str]
+    ) -> MetricSeries:
         return MetricSeries(
             metric=name,
             type=MetricIntakeType.GAUGE,

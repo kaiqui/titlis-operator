@@ -13,6 +13,7 @@ import pytest
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 def _make_pod(phase="Running", ready_status="True", ready_reason=None):
     """Cria um mock de pod Kubernetes."""
     pod = MagicMock()
@@ -33,11 +34,12 @@ def _make_pod(phase="Running", ready_status="True", ready_reason=None):
 # CastAIHealthChecker
 # ---------------------------------------------------------------------------
 
-class TestCastAIHealthChecker:
 
+class TestCastAIHealthChecker:
     @patch("src.infrastructure.kubernetes.castai_health.kubernetes")
     def _make_checker(self, mock_k8s, namespace="castai-agent", cluster="test-cluster"):
         from src.infrastructure.kubernetes.castai_health import CastAIHealthChecker
+
         mock_k8s.config.load_incluster_config.return_value = None
         return CastAIHealthChecker(namespace=namespace, cluster_name=cluster)
 
@@ -57,7 +59,9 @@ class TestCastAIHealthChecker:
 
     def test_not_ready(self):
         checker = self._make_checker()
-        pod = _make_pod(phase="Running", ready_status="False", ready_reason="ContainersNotReady")
+        pod = _make_pod(
+            phase="Running", ready_status="False", ready_reason="ContainersNotReady"
+        )
         is_healthy, reason = checker._evaluate_pod(pod)
         assert is_healthy is False
         assert "ContainersNotReady" in reason
@@ -76,6 +80,7 @@ class TestCastAIHealthChecker:
         mock_core_v1.return_value.list_namespaced_pod.return_value.items = []
 
         from src.infrastructure.kubernetes.castai_health import CastAIHealthChecker
+
         checker = CastAIHealthChecker(namespace="castai-agent", cluster_name="test")
         result = checker._check_service("castai-agent")
 
@@ -87,8 +92,8 @@ class TestCastAIHealthChecker:
 # CastAIMetricsManager
 # ---------------------------------------------------------------------------
 
-class TestCastAIMetricsManager:
 
+class TestCastAIMetricsManager:
     @patch("src.infrastructure.datadog.managers.castai_metrics.ApiClient")
     @patch("src.infrastructure.datadog.managers.castai_metrics.MetricsApi")
     def test_send_healthy(self, mock_metrics_api_cls, mock_api_client_cls):
@@ -97,8 +102,13 @@ class TestCastAIMetricsManager:
         mock_api_client_cls.return_value.__enter__ = lambda s: MagicMock()
         mock_api_client_cls.return_value.__exit__ = MagicMock(return_value=False)
 
-        from src.infrastructure.datadog.managers.castai_metrics import CastAIMetricsManager
-        manager = CastAIMetricsManager(api_key="fake-key", app_key=None, site="datadoghq.com")
+        from src.infrastructure.datadog.managers.castai_metrics import (
+            CastAIMetricsManager,
+        )
+
+        manager = CastAIMetricsManager(
+            api_key="fake-key", app_key=None, site="datadoghq.com"
+        )
 
         with patch.object(manager, "send_pod_health", return_value=True) as mock_send:
             result = manager.send_pod_health(
@@ -111,7 +121,9 @@ class TestCastAIMetricsManager:
         assert result is True
 
     def test_send_all_delegates(self):
-        from src.infrastructure.datadog.managers.castai_metrics import CastAIMetricsManager
+        from src.infrastructure.datadog.managers.castai_metrics import (
+            CastAIMetricsManager,
+        )
 
         manager = CastAIMetricsManager.__new__(CastAIMetricsManager)
         manager.logger = MagicMock()
@@ -126,8 +138,18 @@ class TestCastAIMetricsManager:
         manager.send_pod_health = fake_send
 
         results = [
-            {"service": "castai-agent", "namespace": "castai-agent", "cluster_name": "c1", "is_healthy": True},
-            {"service": "castai-cluster-controller", "namespace": "castai-agent", "cluster_name": "c1", "is_healthy": False},
+            {
+                "service": "castai-agent",
+                "namespace": "castai-agent",
+                "cluster_name": "c1",
+                "is_healthy": True,
+            },
+            {
+                "service": "castai-cluster-controller",
+                "namespace": "castai-agent",
+                "cluster_name": "c1",
+                "is_healthy": False,
+            },
         ]
         manager.send_all(results)
 
@@ -140,15 +162,20 @@ class TestCastAIMetricsManager:
 # Controller — run_castai_health_check
 # ---------------------------------------------------------------------------
 
-class TestCastAIMonitorController:
 
+class TestCastAIMonitorController:
     @pytest.mark.asyncio
     async def test_skips_when_no_cluster_name(self):
-        with patch("src.controllers.castai_monitor_controller.settings") as mock_settings:
+        with patch(
+            "src.controllers.castai_monitor_controller.settings"
+        ) as mock_settings:
             mock_settings.castai_cluster_name = ""
             mock_settings.castai_monitor_namespace = "castai-agent"
 
-            from src.controllers.castai_monitor_controller import run_castai_health_check
+            from src.controllers.castai_monitor_controller import (
+                run_castai_health_check,
+            )
+
             # Não deve lançar exceção
             await run_castai_health_check()
 
@@ -176,9 +203,15 @@ class TestCastAIMonitorController:
         ]
 
         with (
-            patch("src.controllers.castai_monitor_controller.settings") as mock_settings,
-            patch("src.controllers.castai_monitor_controller.CastAIHealthChecker") as mock_checker_cls,
-            patch("src.controllers.castai_monitor_controller.CastAIMetricsManager") as mock_metrics_cls,
+            patch(
+                "src.controllers.castai_monitor_controller.settings"
+            ) as mock_settings,
+            patch(
+                "src.controllers.castai_monitor_controller.CastAIHealthChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.castai_monitor_controller.CastAIMetricsManager"
+            ) as mock_metrics_cls,
         ):
             mock_settings.castai_cluster_name = "my-cluster"
             mock_settings.castai_monitor_namespace = "castai-agent"
@@ -190,7 +223,10 @@ class TestCastAIMonitorController:
             mock_metrics_instance = MagicMock()
             mock_metrics_cls.return_value = mock_metrics_instance
 
-            from src.controllers.castai_monitor_controller import run_castai_health_check
+            from src.controllers.castai_monitor_controller import (
+                run_castai_health_check,
+            )
+
             await run_castai_health_check()
 
             mock_metrics_instance.send_all.assert_called_once()
@@ -213,9 +249,15 @@ class TestCastAIMonitorController:
         ]
 
         with (
-            patch("src.controllers.castai_monitor_controller.settings") as mock_settings,
-            patch("src.controllers.castai_monitor_controller.CastAIHealthChecker") as mock_checker_cls,
-            patch("src.controllers.castai_monitor_controller.CastAIMetricsManager") as mock_metrics_cls,
+            patch(
+                "src.controllers.castai_monitor_controller.settings"
+            ) as mock_settings,
+            patch(
+                "src.controllers.castai_monitor_controller.CastAIHealthChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.castai_monitor_controller.CastAIMetricsManager"
+            ) as mock_metrics_cls,
         ):
             mock_settings.castai_cluster_name = "my-cluster"
             mock_settings.castai_monitor_namespace = "castai-agent"
@@ -223,7 +265,10 @@ class TestCastAIMonitorController:
 
             mock_checker_cls.return_value.check_all.return_value = mock_results
 
-            from src.controllers.castai_monitor_controller import run_castai_health_check
+            from src.controllers.castai_monitor_controller import (
+                run_castai_health_check,
+            )
+
             await run_castai_health_check()
 
             mock_metrics_cls.assert_not_called()

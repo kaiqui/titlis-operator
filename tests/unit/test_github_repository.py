@@ -66,9 +66,7 @@ class TestBranchExists:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_retorna_false_quando_branch_nao_existe_404(
-        self, repo, mock_client
-    ):
+    async def test_retorna_false_quando_branch_nao_existe_404(self, repo, mock_client):
         mock_client.get.side_effect = _make_http_error(404)
         result = await repo.branch_exists("org", "repo", "nonexistent")
         assert result is False
@@ -147,9 +145,7 @@ class TestCreateBranch:
         result = await repo.create_branch("org", "repo", "my-branch", "develop")
 
         assert result is True
-        mock_client.get.assert_called_once_with(
-            "/repos/org/repo/git/ref/heads/develop"
-        )
+        mock_client.get.assert_called_once_with("/repos/org/repo/git/ref/heads/develop")
         mock_client.post.assert_called_once_with(
             "/repos/org/repo/git/refs",
             {"ref": "refs/heads/my-branch", "sha": "abc123"},
@@ -204,9 +200,7 @@ class TestCommitFiles:
         assert payload["sha"] == "old-sha-xyz"
 
     @pytest.mark.asyncio
-    async def test_retorna_false_quando_put_falha(
-        self, repo, mock_client, sample_file
-    ):
+    async def test_retorna_false_quando_put_falha(self, repo, mock_client, sample_file):
         mock_client.get.side_effect = _make_http_error(404)
         mock_client.put.side_effect = Exception("write error")
 

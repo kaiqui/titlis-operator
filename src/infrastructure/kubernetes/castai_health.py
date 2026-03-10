@@ -141,7 +141,11 @@ class CastAIHealthChecker:
     def _init_k8s_client(self) -> None:
         try:
             kubernetes.config.load_incluster_config()
-            self.logger.info("Kubernetes in-cluster config carregada (CastAIHealthChecker)")
+            self.logger.info(
+                "Kubernetes in-cluster config carregada (CastAIHealthChecker)"
+            )
         except kubernetes.config.ConfigException:
             kubernetes.config.load_kube_config()
-            self.logger.info("Kubernetes kubeconfig local carregada (CastAIHealthChecker)")
+            self.logger.info(
+                "Kubernetes kubeconfig local carregada (CastAIHealthChecker)"
+            )

@@ -3,6 +3,7 @@ import logging
 import structlog
 from typing import Optional
 
+
 def configure_logging(level: int = logging.INFO) -> None:
     """
     Configure logging so that:
@@ -23,7 +24,7 @@ def configure_logging(level: int = logging.INFO) -> None:
 
     # Formatter que converte LogRecord -> structlog event -> JSON
     processor_formatter = structlog.stdlib.ProcessorFormatter(
-        processor=structlog.processors.JSONRenderer(),   # output final
+        processor=structlog.processors.JSONRenderer(),  # output final
         foreign_pre_chain=foreign_pre_chain,
     )
 
@@ -43,7 +44,7 @@ def configure_logging(level: int = logging.INFO) -> None:
     # Configure structlog para quem usar structlog.get_logger
     structlog.configure(
         processors=[
-            structlog.contextvars.merge_contextvars,    # se usar contextvars para trace ids
+            structlog.contextvars.merge_contextvars,  # se usar contextvars para trace ids
             structlog.processors.add_log_level,
             structlog.processors.TimeStamper(fmt="iso"),
             structlog.processors.StackInfoRenderer(),
@@ -54,6 +55,7 @@ def configure_logging(level: int = logging.INFO) -> None:
         wrapper_class=structlog.stdlib.BoundLogger,
         cache_logger_on_first_use=False,
     )
+
 
 def get_logger(name: Optional[str] = None) -> logging.Logger:
     """

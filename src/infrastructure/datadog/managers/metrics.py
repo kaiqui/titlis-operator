@@ -43,10 +43,7 @@ class DatadogMetricsManager(DatadogManagerBase):
         from_ts = int(start.timestamp())
         to_ts = int(now.timestamp())
 
-        tags = (
-            f"kube_deployment:{deployment_name},"
-            f"kube_namespace:{namespace}"
-        )
+        tags = f"kube_deployment:{deployment_name}," f"kube_namespace:{namespace}"
         cpu_query = f"avg:kubernetes.cpu.usage.total{{{tags}}}"
         mem_query = f"avg:kubernetes.memory.usage{{{tags}}}"
 
@@ -65,7 +62,9 @@ class DatadogMetricsManager(DatadogManagerBase):
                 if point[1] is not None
             ]
             if values:
-                cpu_avg = max(1, int(sum(values) / len(values) / _NANOCORES_TO_MILLICORES))
+                cpu_avg = max(
+                    1, int(sum(values) / len(values) / _NANOCORES_TO_MILLICORES)
+                )
                 logger.info(
                     "Métrica CPU coletada",
                     extra={
@@ -113,3 +112,47 @@ class DatadogMetricsManager(DatadogManagerBase):
             cpu_avg_millicores=cpu_avg,
             memory_avg_mib=mem_avg,
         )
+
+    def get_request_count(
+        self,
+        service_name: str,
+        days: int = 30,
+    ) -> Optional[int]:
+        """
+        Retorna o total de requisições web do serviço nos últimos N dias.
+
+        Usa a métrica trace.web.request.hits filtrada por service:NAME.
+        Retorna None se não houver dados ou a API estiver indisponível.
+        """
+        from datadog_api_client.v1.api.metrics_api import MetricsApi
+
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=days)
+        from_ts = int(start.timestamp())
+        to_ts = int(now.timestamp())
+
+        query = f"sum:trace.web.request.hits{{service:{service_name}}}.as_count()"
+        api = MetricsApi(self.api_client)
+
+        try:
+            resp = self.execute(api.query_metrics, _from=from_ts, to=to_ts, query=query)
+            values = [
+                point[1]
+                for series in (resp.series or [])
+                for point in (series.pointlist or [])
+                if point[1] is not None
+            ]
+            if not values:
+                return None
+            total = int(sum(values))
+            logger.info(
+                "Contagem de requisições coletada",
+                extra={"service_name": service_name, "days": days, "total": total},
+            )
+            return total
+        except Exception:
+            logger.warning(
+                "Falha ao buscar contagem de requisições do Datadog",
+                extra={"service_name": service_name},
+            )
+            return None

@@ -11,7 +11,11 @@ from src.infrastructure.datadog.repository import DatadogRepository
 from src.infrastructure.slack.repository import SlackRepository
 from src.application.services.slo_service import SLOService
 from src.application.services.slack_service import SlackNotificationService
-from src.domain.slack_models import NotificationSeverity, NotificationChannel, SlackMessageTemplate
+from src.domain.slack_models import (
+    NotificationSeverity,
+    NotificationChannel,
+    SlackMessageTemplate,
+)
 from src.application.services.scorecard_service import ScorecardService
 from src.application.services.slo_metrics_service import SLOMetricsService
 from src.utils.json_logger import configure_logging, get_logger
@@ -19,8 +23,10 @@ from src.utils.json_logger import configure_logging, get_logger
 
 logger = get_logger(__name__)
 
+
 def init_logging():
     configure_logging(logging.INFO)
+
 
 @lru_cache()
 def get_backstage_enricher():
@@ -31,7 +37,9 @@ def get_backstage_enricher():
         return None
 
     if not settings.backstage_url:
-        logger.warning("BACKSTAGE_URL não configurada — backstage enrichment desabilitado")
+        logger.warning(
+            "BACKSTAGE_URL não configurada — backstage enrichment desabilitado"
+        )
         return None
 
     enricher = BackstageEnricher(
@@ -76,7 +84,10 @@ def get_castai_cost_enricher():
     return enricher
 
 
-from src.application.services.scorecard_enricher import ScorecardsStore, ScorecardEnricher
+from src.application.services.scorecard_enricher import (
+    ScorecardsStore,
+    ScorecardEnricher,
+)
 
 _scorecard_store = ScorecardsStore()
 
@@ -94,23 +105,26 @@ def get_scorecard_enricher() -> ScorecardEnricher:
         castai_enricher=get_castai_cost_enricher(),
     )
 
+
 lru_cache()
+
+
 def get_slo_metrics_service() -> Optional[SLOMetricsService]:
     if not settings.enable_slo_controller:
-        logger.info("SLO controller desabilitado; SLOMetricsService não será inicializado")
+        logger.info(
+            "SLO controller desabilitado; SLOMetricsService não será inicializado"
+        )
         return None
 
     try:
         api_key = settings.datadog_api_key
         if not api_key:
-            logger.warning("DD_API_KEY não configurada; métricas SLO serão desabilitadas")
+            logger.warning(
+                "DD_API_KEY não configurada; métricas SLO serão desabilitadas"
+            )
             return None
 
-        env = (
-            os.environ.get("APP_ENV")
-            or os.environ.get("DD_ENV")
-            or "unknown"
-        )
+        env = os.environ.get("APP_ENV") or os.environ.get("DD_ENV") or "unknown"
 
         service = SLOMetricsService(
             api_key=api_key,
@@ -126,8 +140,11 @@ def get_slo_metrics_service() -> Optional[SLOMetricsService]:
         return service
 
     except Exception:
-        logger.exception("Erro ao inicializar SLOMetricsService; métricas serão desabilitadas")
+        logger.exception(
+            "Erro ao inicializar SLOMetricsService; métricas serão desabilitadas"
+        )
         return None
+
 
 @lru_cache()
 def get_status_writer():
@@ -142,6 +159,7 @@ def get_appscorecard_writer() -> Optional[AppScorecardWriter]:
     logger.info("AppScorecardWriter inicializado")
     return writer
 
+
 @lru_cache()
 def get_datadog_credentials() -> tuple:
     api_key = settings.datadog_api_key
@@ -150,7 +168,7 @@ def get_datadog_credentials() -> tuple:
     if not api_key:
         logger.error(
             "API Key do Datadog não encontrada nas variáveis de ambiente",
-            extra={"env_var": "DD_API_KEY"}
+            extra={"env_var": "DD_API_KEY"},
         )
         raise ValueError(
             "API Key do Datadog não encontrada. "
@@ -159,10 +177,11 @@ def get_datadog_credentials() -> tuple:
 
     logger.info(
         "Credenciais Datadog carregadas das variáveis de ambiente",
-        extra={"has_app_key": bool(app_key)}
+        extra={"has_app_key": bool(app_key)},
     )
 
     return api_key, app_key
+
 
 @lru_cache()
 def get_datadog_repository() -> DatadogRepository:
@@ -170,16 +189,11 @@ def get_datadog_repository() -> DatadogRepository:
 
     logger.info(
         "Inicializando repositório Datadog",
-        extra={
-            "has_app_key": bool(app_key),
-            "site": settings.datadog_site
-        }
+        extra={"has_app_key": bool(app_key), "site": settings.datadog_site},
     )
 
     return DatadogRepository(
-        api_key=api_key,
-        app_key=app_key,
-        site=settings.datadog_site
+        api_key=api_key, app_key=app_key, site=settings.datadog_site
     )
 
 
@@ -205,14 +219,14 @@ def get_slack_repository() -> Optional[SlackRepository]:
                 "Slack habilitado mas não há credenciais configuradas",
                 extra={
                     "has_bot_token": bool(bot_token),
-                    "has_webhook": bool(webhook_url)
-                }
+                    "has_webhook": bool(webhook_url),
+                },
             )
             return None
 
         enabled_severities = []
         if settings.slack.enabled_severities:
-            for s in settings.slack.enabled_severities.split(','):
+            for s in settings.slack.enabled_severities.split(","):
                 s = s.strip().lower()
                 try:
                     enabled_severities.append(NotificationSeverity(s))
@@ -221,7 +235,7 @@ def get_slack_repository() -> Optional[SlackRepository]:
 
         enabled_channels = []
         if settings.slack.enabled_channels:
-            for c in settings.slack.enabled_channels.split(','):
+            for c in settings.slack.enabled_channels.split(","):
                 c = c.strip().lower()
                 try:
                     enabled_channels.append(NotificationChannel(c))
@@ -233,7 +247,7 @@ def get_slack_repository() -> Optional[SlackRepository]:
             include_timestamp=settings.slack.include_timestamp,
             include_cluster_info=settings.slack.include_cluster_info,
             include_namespace=settings.slack.include_namespace,
-            max_message_length=settings.slack.max_message_length
+            max_message_length=settings.slack.max_message_length,
         )
 
         repository = SlackRepository(
@@ -244,9 +258,10 @@ def get_slack_repository() -> Optional[SlackRepository]:
             timeout_seconds=settings.slack.timeout_seconds,
             rate_limit_per_minute=settings.slack.rate_limit_per_minute,
             enabled_severities=enabled_severities or list(NotificationSeverity),
-            enabled_channels=enabled_channels or [NotificationChannel.OPERATIONAL, NotificationChannel.ALERTS],
+            enabled_channels=enabled_channels
+            or [NotificationChannel.OPERATIONAL, NotificationChannel.ALERTS],
             message_template=message_template,
-            operator_name="titlis-operator"
+            operator_name="titlis-operator",
         )
 
         logger.info(
@@ -255,8 +270,8 @@ def get_slack_repository() -> Optional[SlackRepository]:
                 "enabled": settings.slack.enabled,
                 "has_bot_token": bool(bot_token),
                 "has_webhook": bool(webhook_url),
-                "default_channel": settings.slack.default_channel
-            }
+                "default_channel": settings.slack.default_channel,
+            },
         )
 
         return repository
@@ -304,6 +319,7 @@ async def shutdown_slack_service():
         await slack_service.shutdown()
         logger.info("Slack service finalizado")
 
+
 @lru_cache()
 def get_scorecard_service() -> Optional[ScorecardService]:
     if not settings.enable_scorecard_controller:
@@ -314,13 +330,19 @@ def get_scorecard_service() -> Optional[ScorecardService]:
 
     try:
         from kubernetes import client
+
         core = client.CoreV1Api()
 
         try:
-            cm = core.read_namespaced_config_map("titlis-scorecard-config", settings.kubernetes_namespace)
+            cm = core.read_namespaced_config_map(
+                "titlis-scorecard-config", settings.kubernetes_namespace
+            )
             if cm.data and "config.yaml" in cm.data:
                 import tempfile
-                with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
+
+                with tempfile.NamedTemporaryFile(
+                    mode="w", suffix=".yaml", delete=False
+                ) as f:
                     f.write(cm.data["config.yaml"])
                     config_path = f.name
 
@@ -356,9 +378,7 @@ def get_github_repository():
         logger.info("Integracao GitHub desabilitada via GITHUB_ENABLED")
         return None
 
-    token = (
-        settings.github.token.get_secret_value() if settings.github.token else None
-    )
+    token = settings.github.token.get_secret_value() if settings.github.token else None
     if not token:
         logger.warning("GITHUB_TOKEN nao configurado — auto-remediacao desabilitada")
         return None

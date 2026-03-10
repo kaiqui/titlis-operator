@@ -65,7 +65,9 @@ class BackstageEnricher:
     # API pública
     # ------------------------------------------------------------------
 
-    def get_profile(self, resource_name: str, namespace: str = "default") -> BackstageProfile:
+    def get_profile(
+        self, resource_name: str, namespace: str = "default"
+    ) -> BackstageProfile:
         """
         Retorna o BackstageProfile para um workload Kubernetes.
         Nunca lança exceção — retorna BackstageProfile.unknown() em caso de falha.
@@ -108,7 +110,9 @@ class BackstageEnricher:
         """Realiza a consulta efetiva ao catálogo Backstage."""
 
         # Tenta lookup por kubernetes-id primeiro (mais preciso)
-        entity = self._lookup_by_k8s_id(resource_name) or self._lookup_by_name(resource_name)
+        entity = self._lookup_by_k8s_id(resource_name) or self._lookup_by_name(
+            resource_name
+        )
 
         if not entity:
             self.logger.info(
@@ -165,7 +169,9 @@ class BackstageEnricher:
             timeout=self._timeout,
         )
 
-    def _parse_entity(self, entity: Dict[str, Any], resource_name: str) -> BackstageProfile:
+    def _parse_entity(
+        self, entity: Dict[str, Any], resource_name: str
+    ) -> BackstageProfile:
         """Mapeia a resposta do catálogo Backstage para BackstageProfile."""
 
         metadata = entity.get("metadata", {})
@@ -183,7 +189,10 @@ class BackstageEnricher:
         # Anotações customizadas Titlis
         tier = annotations.get(self._ANNOTATION_TIER)
         tech_lead = annotations.get(self._ANNOTATION_TECH_LEAD)
-        scorecard_enabled = annotations.get(self._ANNOTATION_SCORECARD_ENABLED, "true").lower() != "false"
+        scorecard_enabled = (
+            annotations.get(self._ANNOTATION_SCORECARD_ENABLED, "true").lower()
+            != "false"
+        )
 
         slo_target_override: Optional[float] = None
         raw_slo_target = annotations.get(self._ANNOTATION_SLO_TARGET)

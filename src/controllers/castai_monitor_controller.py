@@ -115,6 +115,7 @@ async def run_castai_health_check() -> None:
         },
     )
 
+
 def register_castai_monitor() -> bool:
     if not settings.enable_castai_monitor:
         logger.info(
