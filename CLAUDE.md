@@ -795,3 +795,16 @@ make dev               # clean + dev-install + test + lint
 9. Novos serviços externos = Port interface + Adapter + DI em `dependencies.py`
 10. Novas ENV vars = documentar na seção 3 deste arquivo e em `settings.py` com `Field()`
 11. **Nunca** adicionar docstrings — nem de módulo, classe ou função. Lint padrão é **flake8** (regras D100–D107 ignoradas)
+
+---
+
+## 12. Documentação de Referência
+
+| Documento | Propósito |
+|-----------|-----------|
+| [docs/modelagem-dados.md](docs/modelagem-dados.md) | DDL completo (estado atual) + schema evolution fases 1–7 |
+| [docs/rules-and-evolution.md](docs/rules-and-evolution.md) | Regras de código consolidadas + roadmap por fase |
+| [docs/evolution-checklist.md](docs/evolution-checklist.md) | Checklist de progresso do roadmap |
+| [docs/guia-extensao-scorecard.md](docs/guia-extensao-scorecard.md) | Guia para adicionar novas regras de validação |
+| [docs/scorecard-rules.md](docs/scorecard-rules.md) | Todas as 23 regras de validação com detalhamento completo |
+

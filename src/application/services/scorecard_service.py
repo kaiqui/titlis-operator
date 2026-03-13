@@ -360,6 +360,31 @@ class ScorecardService:
                 remediation="Configure behavior.scaleUp.policies e behavior.scaleDown.policies",
                 criticality_profile="rigid",
             ),
+            # ── Observabilidade ───────────────────────────────────────────────────
+            ValidationRule(
+                id="OPS-001",
+                pillar=ValidationPillar.OPERATIONAL,
+                name="Instrumentação Datadog",
+                description=(
+                    "Deployment deve ter labels e annotations de instrumentação Datadog: "
+                    "tags.datadoghq.com/{env,service,version} em metadata e spec.template, "
+                    "admission.datadoghq.com/enabled=true no pod template e "
+                    "admission.datadoghq.com/python-lib.version > 3.17.2"
+                ),
+                rule_type=ValidationRuleType.BOOLEAN,
+                source="K8s API",
+                severity=ValidationSeverity.WARNING,
+                weight=8.0,
+                applies_to=["Deployment"],
+                remediation=(
+                    "Adicione labels tags.datadoghq.com/{env,service,version} em "
+                    "metadata.labels e spec.template.metadata.labels, "
+                    "admission.datadoghq.com/enabled=true em spec.template.metadata.labels e "
+                    "admission.datadoghq.com/python-lib.version > v3.17.2 em "
+                    "spec.template.metadata.annotations"
+                ),
+                documentation_url="https://docs.datadoghq.com/tracing/trace_collection/library_injection_local/",
+            ),
         ]
 
     def _parse_config(
@@ -855,6 +880,77 @@ class ScorecardService:
             return len(policies) > 0
         except Exception:
             return False
+
+    def _validate_ops_001(
+        self, rule: ValidationRule, resource: Dict[str, Any], namespace: str, name: str
+    ) -> ValidationResult:
+        dd_labels = [
+            "tags.datadoghq.com/env",
+            "tags.datadoghq.com/service",
+            "tags.datadoghq.com/version",
+        ]
+        missing: List[str] = []
+
+        metadata_labels = (resource.get("metadata") or {}).get("labels") or {}
+        for label in dd_labels:
+            if not metadata_labels.get(label):
+                missing.append(f"metadata.labels[{label}]")
+
+        template_meta = (
+            (resource.get("spec") or {}).get("template", {}).get("metadata", {})
+        )
+        pod_labels = template_meta.get("labels") or {}
+        for label in dd_labels:
+            if not pod_labels.get(label):
+                missing.append(f"spec.template.metadata.labels[{label}]")
+        if pod_labels.get("admission.datadoghq.com/enabled") != "true":
+            missing.append(
+                "spec.template.metadata.labels[admission.datadoghq.com/enabled=true]"
+            )
+
+        pod_annotations = template_meta.get("annotations") or {}
+        lib_version_raw = pod_annotations.get(
+            "admission.datadoghq.com/python-lib.version"
+        )
+        min_version = (3, 17, 2)
+        if not lib_version_raw:
+            missing.append(
+                "spec.template.metadata.annotations[admission.datadoghq.com/python-lib.version]"
+            )
+        else:
+            version_str = lib_version_raw.lstrip("v")
+            try:
+                parts = tuple(int(x) for x in version_str.split(".")[:3])
+                if parts <= min_version:
+                    missing.append(
+                        f"admission.datadoghq.com/python-lib.version={lib_version_raw} "
+                        f"(requer > v{'.'.join(str(x) for x in min_version)})"
+                    )
+            except ValueError:
+                missing.append(
+                    f"admission.datadoghq.com/python-lib.version={lib_version_raw} (formato inválido)"
+                )
+
+        passed = len(missing) == 0
+        if passed:
+            message = f"{rule.name}: ✅ Instrumentação Datadog configurada corretamente"
+        else:
+            message = (
+                f"{rule.name}: ❌ Configurações ausentes/inválidas: {', '.join(missing)}"
+            )
+
+        return ValidationResult(
+            rule_id=rule.id,
+            rule_name=rule.name,
+            pillar=rule.pillar,
+            passed=passed,
+            severity=rule.severity,
+            weight=rule.weight,
+            message=message,
+            actual_value=lib_version_raw,
+            remediation=rule.remediation,
+            documentation_url=rule.documentation_url,
+        )
 
     def _calculate_limit_ratio(self, resource: Dict[str, Any]) -> Optional[float]:
         try:

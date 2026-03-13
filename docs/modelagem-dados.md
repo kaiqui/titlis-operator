@@ -1006,3 +1006,447 @@ resource_metrics         (CPU/mem do Datadog — candidato a TimescaleDB)
 | `v_score_evolution` | `titlis_audit` | Histórico de scores com `score_delta` por avaliação consecutiva |
 | `v_top_failing_rules` | `titlis_audit` | Ranking de regras que mais falham — input para priorização de melhorias |
 | `v_remediation_effectiveness` | `titlis_audit` | Taxa de sucesso de remediações por workload |
+
+---
+
+## Schema Evolution — Fases Futuras
+
+> PostgreSQL 15+ | Estratégia: SCD Type 4 + Multi-Tenant
+> Executar em ordem: FASE 1 → FASE 2 → ... → FASE 7
+> Cada fase deve ter rollback script associado. Testar em staging antes de produção.
+
+```sql
+-- ================================================================
+-- TITLIS OPERATOR — EVOLUÇÃO DO SCHEMA PARA FUTURAS FUNCIONALIDADES
+-- PostgreSQL 15+ | Estratégia: SCD Type 4 + Multi-Tenant
+-- ================================================================
+
+-- ================================================================
+-- FASE 1: MULTI-TENANT FOUNDATION
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.tenants (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name            VARCHAR(255) NOT NULL UNIQUE,
+    slug            VARCHAR(100) NOT NULL UNIQUE,
+    plan            VARCHAR(50) NOT NULL DEFAULT 'free',  -- free, pro, enterprise
+    max_clusters    INTEGER     NOT NULL DEFAULT 5,
+    max_workloads   INTEGER     NOT NULL DEFAULT 100,
+    max_products    INTEGER     NOT NULL DEFAULT 10,
+    features        JSONB       NOT NULL DEFAULT '{}',
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Adicionar tenant_id a todas as tabelas OLTP (migration)
+ALTER TABLE titlis_oltp.clusters    ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+ALTER TABLE titlis_oltp.namespaces  ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+ALTER TABLE titlis_oltp.workloads   ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+ALTER TABLE titlis_oltp.app_scorecards   ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+ALTER TABLE titlis_oltp.app_remediations ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+ALTER TABLE titlis_oltp.slo_configs ADD COLUMN IF NOT EXISTS tenant_id UUID NOT NULL DEFAULT gen_random_uuid() REFERENCES titlis_oltp.tenants(id);
+
+CREATE INDEX IF NOT EXISTS idx_clusters_tenant    ON titlis_oltp.clusters (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_namespaces_tenant  ON titlis_oltp.namespaces (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_workloads_tenant   ON titlis_oltp.workloads (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_scorecards_tenant  ON titlis_oltp.app_scorecards (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_remediations_tenant ON titlis_oltp.app_remediations (tenant_id);
+
+-- Row Level Security
+ALTER TABLE titlis_oltp.clusters         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE titlis_oltp.namespaces       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE titlis_oltp.workloads        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE titlis_oltp.app_scorecards   ENABLE ROW LEVEL SECURITY;
+ALTER TABLE titlis_oltp.app_remediations ENABLE ROW LEVEL SECURITY;
+ALTER TABLE titlis_oltp.slo_configs      ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.clusters         USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.namespaces       USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.workloads        USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.app_scorecards   USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.app_remediations USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+CREATE POLICY tenant_isolation_policy ON titlis_oltp.slo_configs      USING (tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID);
+
+-- Trigger para setar tenant_id automaticamente
+CREATE OR REPLACE FUNCTION titlis_oltp.fn_set_tenant_id()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+BEGIN
+    IF NEW.tenant_id IS NULL THEN
+        NEW.tenant_id = current_setting('app.current_tenant_id', TRUE)::UUID;
+    END IF;
+    RETURN NEW;
+END;
+$$;
+
+DO $$
+DECLARE tbl TEXT;
+BEGIN
+    FOREACH tbl IN ARRAY ARRAY[
+        'clusters', 'namespaces', 'workloads', 'app_scorecards',
+        'app_remediations', 'slo_configs', 'business_products',
+        'technical_tickets', 'ai_suggestions'
+    ] LOOP
+        EXECUTE format(
+            'CREATE TRIGGER trg_set_tenant_id
+             BEFORE INSERT ON titlis_oltp.%I
+             FOR EACH ROW EXECUTE FUNCTION titlis_oltp.fn_set_tenant_id()',
+            tbl
+        );
+    END LOOP;
+END;
+$$;
+
+-- ================================================================
+-- FASE 2: MULTI-VCS SUPPORT
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.vcs_providers (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    provider_type   VARCHAR(50) NOT NULL,  -- github, gitlab, bitbucket
+    name            VARCHAR(255) NOT NULL,
+    base_url        TEXT,
+    is_default      BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, provider_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.vcs_tokens (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    provider_id     UUID        NOT NULL REFERENCES titlis_oltp.vcs_providers(id),
+    token_hash      VARCHAR(255) NOT NULL,  -- hash do token, nunca plain text
+    scopes          TEXT[],
+    expires_at      TIMESTAMPTZ,
+    last_used_at    TIMESTAMPTZ,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    priority        INTEGER     NOT NULL DEFAULT 0,  -- ordem de failover
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_vcs_tokens_provider ON titlis_oltp.vcs_tokens (provider_id, priority);
+
+ALTER TABLE titlis_oltp.app_remediations ADD COLUMN IF NOT EXISTS vcs_provider_id UUID REFERENCES titlis_oltp.vcs_providers(id);
+ALTER TABLE titlis_oltp.app_remediations ADD COLUMN IF NOT EXISTS vcs_type VARCHAR(50);
+
+-- ================================================================
+-- FASE 3: OBSERVABILITY HUB
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.observability_providers (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    provider_type   VARCHAR(50) NOT NULL,  -- datadog, dynatrace, prometheus, newrelic
+    name            VARCHAR(255) NOT NULL,
+    base_url        TEXT,
+    api_key_secret  VARCHAR(255),
+    is_default      BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    config          JSONB       NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, provider_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.slo_provider_configs (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    slo_config_id   UUID        NOT NULL REFERENCES titlis_oltp.slo_configs(id),
+    provider_id     UUID        NOT NULL REFERENCES titlis_oltp.observability_providers(id),
+    external_slo_id VARCHAR(255),
+    sync_status     VARCHAR(50) NOT NULL DEFAULT 'pending',
+    last_sync_at    TIMESTAMPTZ,
+    sync_error      TEXT,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (slo_config_id, provider_id)
+);
+
+-- ================================================================
+-- FASE 4: FINOPS INTEGRATION
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.cost_providers (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    provider_type   VARCHAR(50) NOT NULL,  -- aws, gcp, azure, castai
+    name            VARCHAR(255) NOT NULL,
+    account_id      VARCHAR(255),
+    is_default      BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    config          JSONB       NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, provider_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.workload_costs (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    workload_id     UUID        NOT NULL REFERENCES titlis_oltp.workloads(id),
+    provider_id     UUID        NOT NULL REFERENCES titlis_oltp.cost_providers(id),
+    cost_usd        NUMERIC(12,2) NOT NULL,
+    period_start    DATE        NOT NULL,
+    period_end      DATE        NOT NULL,
+    currency        VARCHAR(3)  NOT NULL DEFAULT 'USD',
+    breakdown       JSONB,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workload_id, provider_id, period_start, period_end)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workload_costs_period ON titlis_oltp.workload_costs (period_start, period_end);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.cost_scorecard_details (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    scorecard_id     UUID        NOT NULL REFERENCES titlis_oltp.app_scorecards(id),
+    cost_per_request NUMERIC(12,6),
+    cost_per_month   NUMERIC(12,2),
+    efficiency_score NUMERIC(5,2) CHECK (efficiency_score BETWEEN 0 AND 100),
+    waste_identified NUMERIC(12,2),
+    recommendations  JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (scorecard_id)
+);
+
+-- ================================================================
+-- FASE 5: BUSINESS PRODUCTS
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.business_products (
+    id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id       UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    name            VARCHAR(255) NOT NULL,
+    description     TEXT,
+    owner_team_id   UUID,
+    owner_team_name VARCHAR(255),
+    health_score    NUMERIC(5,2) CHECK (health_score BETWEEN 0 AND 100),
+    risk_level      VARCHAR(50),  -- LOW, MEDIUM, HIGH, CRITICAL
+    cost_monthly    NUMERIC(12,2),
+    slo_compliance  NUMERIC(5,2),
+    is_active       BOOLEAN     NOT NULL DEFAULT TRUE,
+    metadata        JSONB       NOT NULL DEFAULT '{}',
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_products_tenant ON titlis_oltp.business_products (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_products_health ON titlis_oltp.business_products (health_score DESC);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.product_applications (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id       UUID        NOT NULL REFERENCES titlis_oltp.business_products(id) ON DELETE CASCADE,
+    workload_id      UUID        NOT NULL REFERENCES titlis_oltp.workloads(id),
+    weight           NUMERIC(5,2) NOT NULL DEFAULT 1.0,
+    discovery_source VARCHAR(50) NOT NULL,  -- tags, manifest, labels, backstage, manual
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (product_id, workload_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_apps_product  ON titlis_oltp.product_applications (product_id);
+CREATE INDEX IF NOT EXISTS idx_product_apps_workload ON titlis_oltp.product_applications (workload_id);
+
+CREATE TABLE IF NOT EXISTS titlis_audit.product_health_history (
+    id                UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    product_id        UUID        NOT NULL,
+    health_score      NUMERIC(5,2) NOT NULL,
+    risk_level        VARCHAR(50),
+    cost_monthly      NUMERIC(12,2),
+    slo_compliance    NUMERIC(5,2),
+    application_count INTEGER     NOT NULL,
+    snapshot          JSONB       NOT NULL,
+    recorded_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_product_health_product_time
+    ON titlis_audit.product_health_history (product_id, recorded_at DESC);
+
+-- Views de produto
+CREATE OR REPLACE VIEW titlis_oltp.v_tenant_dashboard AS
+SELECT
+    t.id                    AS tenant_id,
+    t.name                  AS tenant_name,
+    t.slug,
+    t.plan,
+    COUNT(DISTINCT c.id)    AS cluster_count,
+    COUNT(DISTINCT w.id)    AS workload_count,
+    COUNT(DISTINCT p.id)    AS product_count,
+    AVG(sc.overall_score)   AS avg_health_score,
+    SUM(wc.cost_usd)        AS total_monthly_cost,
+    t.is_active,
+    t.created_at
+FROM titlis_oltp.tenants t
+LEFT JOIN titlis_oltp.clusters c ON c.tenant_id = t.id AND c.is_active = TRUE
+LEFT JOIN titlis_oltp.namespaces n ON n.tenant_id = t.id AND n.is_excluded = FALSE
+LEFT JOIN titlis_oltp.workloads w ON w.tenant_id = t.id AND w.is_active = TRUE
+LEFT JOIN titlis_oltp.app_scorecards sc ON sc.workload_id = w.id
+LEFT JOIN titlis_oltp.business_products p ON p.tenant_id = t.id AND p.is_active = TRUE
+LEFT JOIN titlis_oltp.workload_costs wc ON wc.workload_id = w.id
+GROUP BY t.id;
+
+CREATE OR REPLACE VIEW titlis_oltp.v_product_health_dashboard AS
+SELECT
+    p.id                    AS product_id,
+    p.name                  AS product_name,
+    p.owner_team_name,
+    p.health_score,
+    p.risk_level,
+    p.cost_monthly,
+    p.slo_compliance,
+    COUNT(pa.workload_id)     AS application_count,
+    AVG(sc.overall_score)     AS avg_application_score,
+    MIN(sc.overall_score)     AS min_application_score,
+    MAX(sc.critical_failures) AS max_critical_failures,
+    p.updated_at              AS last_updated
+FROM titlis_oltp.business_products p
+LEFT JOIN titlis_oltp.product_applications pa ON pa.product_id = p.id
+LEFT JOIN titlis_oltp.app_scorecards sc ON sc.workload_id = pa.workload_id
+WHERE p.is_active = TRUE
+GROUP BY p.id;
+
+-- ================================================================
+-- FASE 6: AI AGENTS
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.ai_agent_configs (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    agent_type   VARCHAR(50) NOT NULL,  -- debt_identification, remediation_suggestion, risk_prediction
+    llm_provider VARCHAR(50) NOT NULL,  -- openai, anthropic, gemini, local
+    is_enabled   BOOLEAN     NOT NULL DEFAULT FALSE,
+    config       JSONB       NOT NULL DEFAULT '{}',
+    safety_rules JSONB       NOT NULL DEFAULT '{}',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, agent_type)
+);
+
+CREATE TABLE IF NOT EXISTS titlis_audit.ai_agent_executions (
+    id                    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id             UUID        NOT NULL,
+    agent_type            VARCHAR(50) NOT NULL,
+    workload_id           UUID,
+    input_snapshot        JSONB       NOT NULL,
+    output_snapshot       JSONB       NOT NULL,
+    safety_check_passed   BOOLEAN     NOT NULL,
+    human_review_required BOOLEAN     NOT NULL DEFAULT TRUE,
+    execution_time_ms     INTEGER,
+    token_usage           JSONB,
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_executions_tenant_time
+    ON titlis_audit.ai_agent_executions (tenant_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.ai_suggestions (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    workload_id      UUID        NOT NULL REFERENCES titlis_oltp.workloads(id),
+    agent_type       VARCHAR(50) NOT NULL,
+    suggestion_type  VARCHAR(50) NOT NULL,  -- code_change, config_change, documentation
+    description      TEXT        NOT NULL,
+    confidence_score NUMERIC(5,2) CHECK (confidence_score BETWEEN 0 AND 100),
+    status           VARCHAR(50) NOT NULL DEFAULT 'pending',
+    pr_number        INTEGER,
+    pr_url           TEXT,
+    reviewed_by      VARCHAR(255),
+    reviewed_at      TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_workload ON titlis_oltp.ai_suggestions (workload_id);
+CREATE INDEX IF NOT EXISTS idx_ai_suggestions_status   ON titlis_oltp.ai_suggestions (status);
+
+-- ================================================================
+-- FASE 7: PROJECT MANAGEMENT INTEGRATION
+-- ================================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.pm_providers (
+    id             UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    provider_type  VARCHAR(50) NOT NULL,  -- jira, linear, azure_devops, clickup
+    name           VARCHAR(255) NOT NULL,
+    base_url       TEXT,
+    api_key_secret VARCHAR(255),
+    is_default     BOOLEAN     NOT NULL DEFAULT FALSE,
+    is_active      BOOLEAN     NOT NULL DEFAULT TRUE,
+    config         JSONB       NOT NULL DEFAULT '{}',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, provider_type, name)
+);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.technical_tickets (
+    id                  UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id           UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    workload_id         UUID        REFERENCES titlis_oltp.workloads(id),
+    product_id          UUID        REFERENCES titlis_oltp.business_products(id),
+    provider_id         UUID        NOT NULL REFERENCES titlis_oltp.pm_providers(id),
+    external_ticket_id  VARCHAR(255),
+    external_ticket_url TEXT,
+    title               VARCHAR(500) NOT NULL,
+    description         TEXT,
+    priority            VARCHAR(50),
+    status              VARCHAR(50),
+    source_rule_id      VARCHAR(50),
+    estimated_impact    JSONB,
+    auto_created        BOOLEAN     NOT NULL DEFAULT FALSE,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    resolved_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_tech_tickets_tenant   ON titlis_oltp.technical_tickets (tenant_id);
+CREATE INDEX IF NOT EXISTS idx_tech_tickets_workload ON titlis_oltp.technical_tickets (workload_id);
+CREATE INDEX IF NOT EXISTS idx_tech_tickets_status   ON titlis_oltp.technical_tickets (status);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.technical_okrs (
+    id           UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES titlis_oltp.tenants(id),
+    product_id   UUID        REFERENCES titlis_oltp.business_products(id),
+    objective    TEXT        NOT NULL,
+    period_start DATE        NOT NULL,
+    period_end   DATE        NOT NULL,
+    status       VARCHAR(50) NOT NULL DEFAULT 'active',
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.technical_okr_key_results (
+    id               UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    okr_id           UUID        NOT NULL REFERENCES titlis_oltp.technical_okrs(id) ON DELETE CASCADE,
+    description      TEXT        NOT NULL,
+    current_value    NUMERIC(12,2),
+    target_value     NUMERIC(12,2) NOT NULL,
+    unit             VARCHAR(50),
+    progress_percent NUMERIC(5,2) CHECK (progress_percent BETWEEN 0 AND 100),
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ================================================================
+-- PARTITIONING STRATEGY — Produção (após 6 meses de dados)
+-- NOTA: Requer extensão pg_partman
+-- ================================================================
+
+-- SELECT pg_partman.create_parent('titlis_audit.app_scorecard_history', 'evaluated_at', 'native', 'quarterly');
+-- SELECT pg_partman.create_parent('titlis_audit.remediation_history',   'created_at',   'native', 'quarterly');
+-- SELECT pg_partman.create_parent('titlis_ts.scorecard_scores',         'recorded_at',  'native', 'monthly');
+-- SELECT pg_partman.create_parent('titlis_ts.resource_metrics',         'collected_at', 'native', 'weekly');
+
+-- ================================================================
+-- END OF SCHEMA EVOLUTION
+-- ================================================================
+```
+
+### Tabelas por Fase
+
+| Fase | Tabelas Novas | Alterações em Existentes |
+|------|--------------|--------------------------|
+| 1 — Multi-Tenant | `tenants` | `tenant_id` + RLS + trigger em todas as tabelas OLTP |
+| 2 — Multi-VCS | `vcs_providers`, `vcs_tokens` | `vcs_provider_id`, `vcs_type` em `app_remediations` |
+| 3 — Observability Hub | `observability_providers`, `slo_provider_configs` | — |
+| 4 — FinOps | `cost_providers`, `workload_costs`, `cost_scorecard_details` | — |
+| 5 — Business Products | `business_products`, `product_applications`, `product_health_history` | Views `v_tenant_dashboard`, `v_product_health_dashboard` |
+| 6 — AI Agents | `ai_agent_configs`, `ai_agent_executions`, `ai_suggestions` | — |
+| 7 — Project Management | `pm_providers`, `technical_tickets`, `technical_okrs`, `technical_okr_key_results` | — |

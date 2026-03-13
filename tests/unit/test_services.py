@@ -468,3 +468,98 @@ class TestScorecardService:
             warning_issues=0,
         )
         assert scorecard_service.get_notification_severity(info_scorecard) == "info"
+
+    def _make_dd_deployment(self, lib_version="v4.5.3"):
+        dd_labels = {
+            "tags.datadoghq.com/env": "production",
+            "tags.datadoghq.com/service": "my-service",
+            "tags.datadoghq.com/version": "1.0.0",
+        }
+        return {
+            "metadata": {
+                "name": "test-deployment",
+                "namespace": "default",
+                "labels": dict(dd_labels),
+            },
+            "spec": {
+                "template": {
+                    "metadata": {
+                        "labels": {
+                            **dd_labels,
+                            "admission.datadoghq.com/enabled": "true",
+                        },
+                        "annotations": {
+                            "admission.datadoghq.com/python-lib.version": lib_version,
+                        },
+                    },
+                    "spec": {"containers": [{"name": "app", "image": "app:1.0.0"}]},
+                }
+            },
+        }
+
+    def test_ops_001_passes_when_fully_instrumented(self, scorecard_service):
+        from src.domain.models import ValidationPillar
+
+        resource = self._make_dd_deployment("v4.5.3")
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is True
+        assert result.pillar == ValidationPillar.OPERATIONAL
+        assert "✅" in result.message
+
+    def test_ops_001_fails_when_metadata_labels_missing(self, scorecard_service):
+        resource = self._make_dd_deployment("v4.5.3")
+        resource["metadata"].pop("labels")
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is False
+        assert "metadata.labels[tags.datadoghq.com/env]" in result.message
+
+    def test_ops_001_fails_when_pod_template_label_missing(self, scorecard_service):
+        resource = self._make_dd_deployment("v4.5.3")
+        resource["spec"]["template"]["metadata"]["labels"].pop(
+            "admission.datadoghq.com/enabled"
+        )
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is False
+        assert "admission.datadoghq.com/enabled=true" in result.message
+
+    def test_ops_001_fails_when_lib_version_too_old(self, scorecard_service):
+        resource = self._make_dd_deployment("v3.17.2")
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is False
+        assert "python-lib.version" in result.message
+
+    def test_ops_001_passes_with_version_exactly_above_minimum(self, scorecard_service):
+        resource = self._make_dd_deployment("v3.17.3")
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is True
+
+    def test_ops_001_fails_when_annotation_absent(self, scorecard_service):
+        resource = self._make_dd_deployment("v4.5.3")
+        resource["spec"]["template"]["metadata"]["annotations"] = {}
+        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
+        result = scorecard_service._validate_ops_001(
+            rule, resource, "default", "test-deployment"
+        )
+
+        assert result.passed is False
+        assert "python-lib.version" in result.message
