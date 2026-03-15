@@ -22,6 +22,9 @@ class SLOController(BaseController):
         context = self._get_resource_context(body)
         resource_name = context["resource_name"]
         resource_namespace = context["resource_namespace"]
+        resource_uid = context.get("resource_uid")
+        known_slo_id = (body.get("status") or {}).get("slo_id")
+        k8s_annotations = (body.get("metadata") or {}).get("annotations") or {}
         event_type = kwargs.get("event_type", "unknown")
 
         if self._is_namespace_excluded(resource_namespace):
@@ -67,10 +70,11 @@ class SLOController(BaseController):
 
             if spec.type == SLOType.METRIC:
                 has_app_framework = spec.app_framework is not None
-                has_numerator_denominator = spec.numerator and spec.denominator
-                if not has_app_framework and not has_numerator_denominator:
+                has_numerator_denominator = bool(spec.numerator and spec.denominator)
+                has_auto_detect = spec.auto_detect_framework
+                if not has_app_framework and not has_numerator_denominator and not has_auto_detect:
                     result["validation_errors"].append(
-                        "SLOs métricos requerem app_framework ou numerator e denominator"
+                        "SLOs métricos requerem app_framework, numerator e denominator, ou auto_detect_framework: true"
                     )
                     validation_passed = False
 
@@ -143,6 +147,9 @@ class SLOController(BaseController):
                         namespace=resource_namespace,
                         service=spec.service,
                         spec=spec,
+                        resource_uid=resource_uid,
+                        known_slo_id=known_slo_id,
+                        k8s_annotations=k8s_annotations,
                     )
                     or {}
                 )
@@ -185,6 +192,9 @@ class SLOController(BaseController):
                 "error": None
                 if result["success"]
                 else (result["datadog_error"] or "Erro desconhecido"),
+                "detected_framework": result.get(
+                    "reconciliation_result", {}
+                ).get("detected_framework"),
             }
 
             if result["validation_errors"] and any(

@@ -342,8 +342,8 @@ jt-operator/
 | `ScorecardConfig` | Configuração do sistema de scorecard (regras, thresholds) |
 | `SLO` | Definição de SLO |
 | `ServiceDefinition` | Definição de serviço no Datadog |
-| `SLOConfigSpec` | Spec do CRD SLOConfig |
-| `SLOConfigStatus` | Status do CRD SLOConfig |
+| `SLOConfigSpec` | Spec do CRD SLOConfig — inclui `auto_detect_framework: bool` (detecta framework via Datadog tag ou annotation K8s) |
+| `SLOConfigStatus` | Status do CRD SLOConfig — inclui `detected_framework: str` (framework detectado automaticamente) |
 
 #### `github_models.py`
 
@@ -370,7 +370,7 @@ jt-operator/
 | `ScorecardService` | Avalia 26+ regras nos workloads, calcula pillar scores |
 | `ScorecardEnricher` | Enriquece scorecard com dados de Backstage e CAST AI |
 | `RemediationService` | Orquestra auto-remediação: Datadog → YAML → GitHub PR → Slack |
-| `SLOService` | Reconcilia SLOConfig CRDs com Datadog (create/update/noop) |
+| `SLOService` | Reconcilia SLOConfig CRDs com Datadog (create/update/noop); auto-detecta framework via annotation K8s → Datadog tag → fallback WSGI; idempotência em 3 caminhos (fast-path por `known_slo_id`, orphan check por tag, fluxo original) |
 | `SLOMetricsService` | Coleta métricas de SLO do Datadog |
 | `SlackService` | Dispara notificações Slack com rate limiting |
 | `NamespaceNotificationBuffer` | Agrega scorecards por namespace e envia digest em lote |
@@ -380,7 +380,7 @@ jt-operator/
 | Controller | Triggers K8s | Responsabilidade |
 |---|---|---|
 | `ScorecardController` | resume/create/update/delete em `apps/v1/deployments` | Avalia scorecard, triggera remediação, escreve CRDs |
-| `SLOController` | create/update/delete em SLOConfig CRD | Sincroniza SLOs com Datadog |
+| `SLOController` | create/update/delete em SLOConfig CRD | Sincroniza SLOs com Datadog; extrai `known_slo_id` de `status.slo_id` e `k8s_annotations` de `metadata.annotations` para passar ao `SLOService`; persiste `detected_framework` no status |
 | `CastaiMonitorController` | Loop periódico | Monitora saúde do agente CAST AI |
 | `BaseController` | — | Helpers: status update, Slack seguro, namespace exclusion |
 
@@ -389,7 +389,7 @@ jt-operator/
 | Port | Métodos principais |
 |---|---|
 | `GitHubPort` | `branch_exists`, `create_branch`, `get_file_content`, `commit_files`, `create_pull_request`, `find_open_remediation_pr` |
-| `DatadogPort` | `get_service_definition`, `get_service_slos`, `create_slo`, `update_slo_apps`, `get_container_metrics` |
+| `DatadogPort` | `get_service_definition`, `get_service_slos`, `create_slo`, `update_slo_apps`, `get_container_metrics`, `find_slo_by_tags` |
 | `SlackPort` | `send_notification`, `test_connection`, `is_enabled` |
 
 ### Infrastructure Adapters (`src/infrastructure/`)
@@ -517,7 +517,33 @@ excluded_namespaces:
 **Solução:** Conferir validação em `slo_controller.py`:
 - `warning` deve ser **menor** que `target` (ex: target=99.9, warning=99.0)
 - Ambos entre 0 e 100
-- Para tipo METRIC: obrigatório `app_framework` OU (`numerator` + `denominator`)
+- Para tipo METRIC: obrigatório `app_framework`, (`numerator` + `denominator`), **ou** `auto_detect_framework: true`
+
+---
+
+### H-13: Framework detectado incorretamente (fallback WSGI inesperado)
+
+**Sintoma:** SLO criado com queries WSGI, mas o serviço usa FastAPI/aiohttp. `status.detected_framework` mostra `"wsgi"` com `detection_source: fallback`.
+
+**Causa:** Nenhuma das fontes de detecção encontrou o framework: (1) sem annotation `titlis.io/app-framework` no recurso SLOConfig, e (2) a Datadog Service Definition do serviço não tem tag `framework:<value>`.
+
+**Solução:** Escolha uma das três abordagens:
+```yaml
+# Opção 1 — annotation no SLOConfig (maior precedência)
+metadata:
+  annotations:
+    titlis.io/app-framework: fastapi
+
+# Opção 2 — tag na Datadog Service Definition do serviço
+tags:
+  - framework:fastapi
+
+# Opção 3 — campo explícito no spec (ignora auto-detecção)
+spec:
+  app_framework: fastapi
+  auto_detect_framework: false
+```
+Verificar no log: campo `detection_source` indica `"annotation"`, `"datadog_tag"` ou `"fallback"`.
 
 ---
 
@@ -587,7 +613,7 @@ excluded_namespaces:
 
 ---
 
-## 7. Quatorze Design Patterns do Projeto
+## 7. Quinze Design Patterns do Projeto
 
 ### P-01: Hexagonal Architecture (Ports & Adapters)
 Domínio isolado de infraestrutura via interfaces abstratas em `src/application/ports/`. Serviços dependem de ports, nunca de adapters diretamente. Facilita testes (mock ports) e troca de providers.
@@ -631,6 +657,12 @@ Usa `ruamel.yaml` (não PyYAML) para ler, modificar e reescrever `deploy.yaml` s
 ### P-14: CRD as State Store
 `AppScorecard` e `AppRemediation` CRDs servem como estado persistente do operador. Permitem que outros sistemas consultem o estado atual sem acesso interno ao operador. Status subresource atualizado após cada evento.
 
+### P-15: Three-Path SLO Idempotency
+`SLOService.reconcile_slo` usa três caminhos de execução para garantir idempotência completa:
+- **Path A** (`known_slo_id` presente) — fast path no restart: usa `status.slo_id` diretamente, salta toda busca, chama `update_slo_apps` direto.
+- **Path B** (`known_slo_id` ausente, `resource_uid` presente) — orphan safety check: busca via `find_slo_by_tags(["titlis_resource_uid:<uid>"])` antes de criar, evita SLOs duplicados após crash/restore.
+- **Path C** — fluxo original: `get_service_slos` → `check_and_update_existing_slo` → create. Todo SLO criado recebe tag `titlis_resource_uid:<k8s-uid>` para permitir Path B em reconciliações futuras.
+
 ---
 
 ## 8. Pipeline Semanal Completo
@@ -649,6 +681,7 @@ Usa `ruamel.yaml` (não PyYAML) para ler, modificar e reescrever `deploy.yaml` s
 
 ```
 10:00 - Verificar SLOConfigs com state=error no status
+10:15 - Checar SLOConfigs com detected_framework=wsgi e detection_source=fallback (possível framework errado)
 10:30 - Checar compliance dos SLOs no Datadog (target vs actual)
 11:00 - Atualizar thresholds se necessário
 ```
