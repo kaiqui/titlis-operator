@@ -193,6 +193,15 @@ ENABLE_BACKSTAGE_ENRICHMENT=false
 ENABLE_CASTAI_COST_ENRICHMENT=false
 ```
 
+### Titlis API (comunicação operator → banco)
+
+```bash
+TITLIS_API_ENABLED=false
+TITLIS_API_HOST=titlis-api.titlis-system.svc.cluster.local
+TITLIS_API_UDP_PORT=8125
+TITLIS_API_HTTP_PORT=8080
+```
+
 ### Integrações Opcionais
 
 ```bash
@@ -840,4 +849,67 @@ make dev               # clean + dev-install + test + lint
 | [docs/evolution-checklist.md](docs/evolution-checklist.md) | Checklist de progresso do roadmap |
 | [docs/guia-extensao-scorecard.md](docs/guia-extensao-scorecard.md) | Guia para adicionar novas regras de validação |
 | [docs/scorecard-rules.md](docs/scorecard-rules.md) | Todas as 23 regras de validação com detalhamento completo |
+| [docs/guia-titlis-api-kotlin.md](docs/guia-titlis-api-kotlin.md) | Passo a passo para criar a Titlis API (Kotlin/Ktor) e integrar ao operador |
+
+---
+
+## 13. Banco de Dados Relacional
+
+### Status atual
+
+> **Schema criado, não integrado.** O operador persiste estado exclusivamente via CRDs Kubernetes.
+> O banco de dados é uma camada de observabilidade futura — não é pré-requisito para operação.
+
+### Script de criação
+
+```bash
+# Criar o banco (uma única vez em cada ambiente):
+psql -U postgres -c "CREATE DATABASE titlis;"
+psql -U postgres -d titlis -f db/schema.sql
+```
+
+### Estrutura de schemas
+
+| Schema | SLA | Propósito |
+|--------|-----|-----------|
+| `titlis_oltp` | < 5ms | Estado atual de workloads, scorecards, remediações e SLOs |
+| `titlis_audit` | 100% completude | Histórico SCD Type 4 + audit trail de notificações |
+| `titlis_ts` | volume | Métricas CPU/mem e scores time-series (candidato a TimescaleDB) |
+
+### Tabelas principais
+
+| Tabela | Schema | Descrição |
+|--------|--------|-----------|
+| `clusters` | `titlis_oltp` | Clusters Kubernetes registrados |
+| `namespaces` | `titlis_oltp` | Namespaces por cluster |
+| `workloads` | `titlis_oltp` | Deployments rastreados (soft-delete) |
+| `validation_rules` | `titlis_oltp` | Catálogo imutável das 26+ regras |
+| `app_scorecards` | `titlis_oltp` | Estado atual do scorecard (1 por workload — SCD Type 4) |
+| `pillar_scores` | `titlis_oltp` | Score por pilar do scorecard atual |
+| `validation_results` | `titlis_oltp` | Resultado por regra do scorecard atual |
+| `app_remediations` | `titlis_oltp` | Estado atual da remediação (1 por workload — SCD Type 4) |
+| `remediation_issues` | `titlis_oltp` | Issues individuais vinculadas à remediação |
+| `slo_configs` | `titlis_oltp` | Estado atual dos SLOConfig CRDs |
+| `app_scorecard_history` | `titlis_audit` | Histórico de scorecards com snapshot JSONB |
+| `pillar_score_history` | `titlis_audit` | Histórico granular por pilar |
+| `remediation_history` | `titlis_audit` | Log de todas as transições de estado de remediação |
+| `slo_compliance_history` | `titlis_audit` | Histórico de sincronizações com o Datadog |
+| `notification_log` | `titlis_audit` | Auditoria de notificações Slack |
+| `resource_metrics` | `titlis_ts` | CPU/memória coletados do Datadog |
+| `scorecard_scores` | `titlis_ts` | Série temporal plana para Grafana/Metabase |
+
+### Padrões de design do banco
+
+- **SCD Type 4**: tabela corrente (`app_scorecards`) + tabela histórica separada (`app_scorecard_history`). Triggers `BEFORE UPDATE` arquivam automaticamente o estado anterior quando `version` muda.
+- **Never-FK em audit**: tabelas `titlis_audit.*` usam referências lógicas (sem FK constraint) — histórico sobrevive à deleção de workloads.
+- **Snapshot JSONB**: `pillar_scores` e `validation_results` desnormalizados como JSONB no histórico eliminam joins analíticos.
+- **Particionamento futuro**: `titlis_audit.*` e `titlis_ts.*` projetados para `PARTITION BY RANGE` trimestral via `pg_partman`.
+
+### Quando integrar
+
+A integração com o banco deve ocorrer quando houver necessidade de:
+- Dashboard/frontend com histórico de scores
+- Queries analíticas (top regras que mais falham, taxa de sucesso de remediações)
+- Auditoria de notificações Slack com retenção longa
+- Métricas time-series independentes do Datadog
 
