@@ -34,14 +34,17 @@
 
 ### Semana 3–4: Operator → API Communication
 
+> Arquitetura documentada em [docs/guia-titlis-api-kotlin.md](guia-titlis-api-kotlin.md).
+> Protocolo TitlisUDP (JSON-over-UDP :8125) + REST :8080 (Kotlin/Ktor).
+
 | Status | Item | Arquivo(s) Afetado(s) |
 |--------|------|----------------------|
-| `📋 Planned` | Criar `TitlisAPIClient` em `src/infrastructure/api/` | src/infrastructure/api/client.py |
-| `📋 Planned` | Implementar HTTP endpoints para scorecards | src/infrastructure/api/ |
-| `📋 Planned` | Implementar UDP telemetry sender | src/infrastructure/api/ |
+| `🚧 In Progress` | Criar `TitlisApiUdpClient` em `src/infrastructure/titlis_api/` | src/infrastructure/titlis_api/udp_client.py |
+| `🚧 In Progress` | Implementar HTTP endpoints para scorecards (Ktor) | titlis-api/src/.../routes/ |
+| `🚧 In Progress` | Implementar servidor UDP TitlisUDP (Ktor/Coroutines) | titlis-api/src/.../udp/ |
 | `📋 Planned` | Remover acesso direto ao DB do Operator | src/bootstrap/dependencies.py |
-| `📋 Planned` | Implementar retry com fallback local (CRD) | src/infrastructure/api/client.py |
-| `📋 Planned` | Testes de comunicação com falhas de rede | tests/unit/ |
+| `📋 Planned` | Implementar retry com fallback local (CRD) | src/infrastructure/titlis_api/udp_client.py |
+| `📋 Planned` | Testes de comunicação com falhas de rede | tests/unit/test_titlis_api_client.py |
 
 ### Decisões Arquiteturais — Fase 1
 
