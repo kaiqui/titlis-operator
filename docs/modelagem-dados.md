@@ -3,6 +3,10 @@
 > **DBA Specialist / Arquiteto de Dados Sênior**
 > Estratégia: SCD Type 4 + Append-only Time-series | PostgreSQL 15+
 
+> **Status do banco:** Schema criado em [`db/schema.sql`](../db/schema.sql) — **não integrado ao operador**.
+> O operador ainda persiste estado exclusivamente via CRDs Kubernetes (`AppScorecard`, `AppRemediation`, `SLOConfig`).
+> A integração com o banco de dados é planejada como fase futura (ver Schema Evolution).
+
 ---
 
 ## Estratégia Arquitetural
