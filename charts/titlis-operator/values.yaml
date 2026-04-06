@@ -104,6 +104,16 @@ github:
   timeoutSeconds: 30
   # Secret: GITHUB_TOKEN must be in titlis-github-keys secret
 
+# Titlis API (UDP events)
+titlisApi:
+  enabled: false
+  host: "titlis-api.titlis-system.svc.cluster.local"
+  udpPort: 8125
+  httpPort: 8080
+  # Secret must have key: TITLIS_API_API_KEY
+  # Required when enabled=true — operator fails to start without it
+  secretName: "titlis-api-keys"
+
 # Datadog
 datadog:
   site: "datadoghq.com"

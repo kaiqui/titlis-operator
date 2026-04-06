@@ -15,12 +15,12 @@ class TitlisApiUdpClient(TitlisApiPort):
         host: str,
         udp_port: int,
         http_base_url: str,
-        default_tenant_id: Optional[int] = None,
+        api_key: str,
     ):
         self._host = host
         self._udp_port = udp_port
         self._http_base_url = http_base_url
-        self._default_tenant_id = default_tenant_id
+        self._api_key = api_key
         self._transport: Optional[asyncio.DatagramTransport] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -39,14 +39,11 @@ class TitlisApiUdpClient(TitlisApiPort):
             )
 
     async def _send_udp(self, event_type: str, data: dict) -> None:
-        tenant_id = data.get("tenant_id", self._default_tenant_id)
-        if tenant_id is not None:
-            data = {**data, "tenant_id": tenant_id}
-        envelope = {
+        envelope: dict = {
             "v": 1,
             "t": event_type,
             "ts": int(time.time() * 1000),
-            "tenant_id": tenant_id,
+            "api_key": self._api_key,
             "data": data,
         }
         try:

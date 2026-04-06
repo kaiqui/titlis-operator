@@ -77,9 +77,43 @@ def startup(settings_: "kopf.OperatorSettings | None" = None, **kwargs: Any) -> 
         raise kopf.TemporaryError(f"Erro na inicialização: {exc}", delay=30)
 
 
+async def _wait_for_titlis_api(timeout: int = 60) -> None:
+    if not settings.titlis_api.enabled:
+        return
+    import asyncio
+    import httpx
+
+    health_url = f"{settings.titlis_api.http_base_url}/health"
+    deadline = asyncio.get_event_loop().time() + timeout
+    attempt = 0
+    while asyncio.get_event_loop().time() < deadline:
+        attempt += 1
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                resp = await client.get(health_url)
+                if resp.status_code == 200:
+                    logger.info(
+                        "Titlis API disponível",
+                        extra={"url": health_url, "attempt": attempt},
+                    )
+                    return
+        except Exception:
+            pass
+        logger.info(
+            "Aguardando Titlis API ficar disponível",
+            extra={"url": health_url, "attempt": attempt},
+        )
+        await asyncio.sleep(3)
+    logger.warning(
+        "Titlis API não ficou disponível no timeout — prosseguindo sem garantia de entrega",
+        extra={"url": health_url, "timeout_seconds": timeout},
+    )
+
+
 @kopf.on.startup()
 async def startup_async(**kwargs: Any) -> None:
     try:
+        await _wait_for_titlis_api(timeout=60)
         await initialize_slack_service()
         logger.info("Startup assíncrono concluído")
     except Exception as exc:

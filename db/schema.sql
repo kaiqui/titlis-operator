@@ -452,6 +452,39 @@ CREATE INDEX idx_slo_datadog_id         ON titlis_oltp.slo_configs (datadog_slo_
 CREATE INDEX idx_slo_k8s_uid            ON titlis_oltp.slo_configs (k8s_resource_uid) WHERE k8s_resource_uid IS NOT NULL;
 CREATE INDEX idx_slo_detection_source   ON titlis_oltp.slo_configs (detection_source);
 
+-- ----------------------------------------------------------------
+-- tenant_api_keys  (autenticação do operator — modelo Datadog agent key)
+-- O operator envia api_key no envelope UDP em vez de tenant_id numérico.
+-- A API valida o hash, resolve o tenant e descarta o tenant_id fixo.
+-- key_hash = SHA-256 do token completo (lookup rápido sem bcrypt).
+-- key_prefix = primeiros 12 chars do token (exibição sem expor a key).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_api_keys (
+    api_key_id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id           BIGINT      NOT NULL REFERENCES titlis_oltp.tenants(tenant_id),
+    key_prefix          VARCHAR(16) NOT NULL,
+    key_hash            VARCHAR(64) NOT NULL UNIQUE,
+    description         VARCHAR(255),
+    is_active           BOOLEAN     NOT NULL DEFAULT TRUE,
+    last_used_at        TIMESTAMPTZ,
+    created_by_user_id  BIGINT      REFERENCES titlis_oltp.platform_users(platform_user_id),
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    revoked_at          TIMESTAMPTZ
+);
+
+COMMENT ON TABLE  titlis_oltp.tenant_api_keys                        IS 'API keys para autenticação do operator (modelo Datadog agent key). O operator envia key no envelope UDP e a API resolve o tenant sem depender de DEFAULT_TENANT_ID.';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.api_key_id             IS 'Chave primária surrogate';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.tenant_id              IS 'Tenant proprietário da key';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.key_prefix             IS 'Primeiros 12 chars do token (ex: tls_k_a3f9b2) — exibição sem expor a key completa';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.key_hash               IS 'SHA-256 do token completo — usado para lookup rápido sem bcrypt';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.description            IS 'Descrição legível: "Operator prod cluster-a", etc.';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.is_active              IS 'FALSE após revogação — soft delete para manter histórico';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.last_used_at           IS 'Atualizado a cada evento UDP válido — permite detectar keys órfãs';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.created_by_user_id     IS 'Usuário admin que gerou a key (nullable — criação via bootstrap não tem usuário)';
+COMMENT ON COLUMN titlis_oltp.tenant_api_keys.revoked_at             IS 'Timestamp de revogação; NULL enquanto ativa';
+
+CREATE INDEX IF NOT EXISTS idx_tenant_api_keys_tenant ON titlis_oltp.tenant_api_keys (tenant_id);
+
 -- ================================================================
 -- SCHEMA: titlis_audit — Histórico e Auditoria (SCD Type 4)
 -- ================================================================

@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -11,9 +11,16 @@ class TitlisApiSettings(BaseSettings):
     host: str = Field(default="titlis-api.titlis-system.svc.cluster.local")
     udp_port: int = Field(default=8125)
     http_port: int = Field(default=8080)
-    default_tenant_id: Optional[int] = Field(
-        default=None, validation_alias="DEFAULT_TENANT_ID"
-    )
+    api_key: Optional[SecretStr] = Field(default=None)
+
+    @model_validator(mode="after")
+    def require_api_key_when_enabled(self) -> "TitlisApiSettings":
+        if self.enabled and not self.api_key:
+            raise ValueError(
+                "TITLIS_API_API_KEY é obrigatória quando TITLIS_API_ENABLED=true. "
+                "Gere uma key no painel em /settings/api-keys e configure o Secret K8s."
+            )
+        return self
 
     @property
     def http_base_url(self) -> str:
@@ -256,6 +263,9 @@ class Settings(BaseSettings):
     )
     synthetic_monitor_timeout_seconds: float = Field(
         default=10.0, validation_alias="SYNTHETIC_MONITOR_TIMEOUT_SECONDS"
+    )
+    synthetic_checks_config_path: Optional[str] = Field(
+        default=None, validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH"
     )
 
     backstage_url: Optional[str] = Field(default=None, validation_alias="BACKSTAGE_URL")

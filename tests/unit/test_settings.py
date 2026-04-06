@@ -24,7 +24,6 @@ class TestSettings:
             "SLACK_ENABLED": "false",
             "SLACK_DEFAULT_CHANNEL": "#test",
             "DD_API_KEY": "test-key",
-            "DEFAULT_TENANT_ID": "42",
         },
     )
     def test_settings_from_env(self):
@@ -32,7 +31,6 @@ class TestSettings:
         assert settings.slack.enabled is False
         assert settings.slack.default_channel == "#test"
         assert settings.datadog_api_key == "test-key"
-        assert settings.titlis_api.default_tenant_id == 42
 
     def test_settings_singleton(self):
         from src.settings import settings as singleton1
@@ -44,3 +42,21 @@ class TestSettings:
         # Pydantic V2: use model_fields instead of __fields__
         field_info = SlackSettings.model_fields["enabled"]
         assert field_info.validation_alias == "SLACK_ENABLED"
+
+    @patch.dict(
+        "os.environ",
+        {"TITLIS_API_ENABLED": "true", "TITLIS_API_API_KEY": "tls_k_abc123"},
+    )
+    def test_titlis_api_key_env_var(self):
+        from src.settings import TitlisApiSettings
+        s = TitlisApiSettings()
+        assert s.enabled is True
+        assert s.api_key is not None
+        assert s.api_key.get_secret_value() == "tls_k_abc123"
+
+    @patch.dict("os.environ", {"TITLIS_API_ENABLED": "true"})
+    def test_titlis_api_fails_fast_when_enabled_without_key(self):
+        from pydantic import ValidationError
+        from src.settings import TitlisApiSettings
+        with pytest.raises((ValidationError, ValueError)):
+            TitlisApiSettings()
