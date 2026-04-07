@@ -23,8 +23,10 @@ _AnyCheck = Union[SiteHealthCheckConfig, JsonValueCheckConfig]
 
 
 def _load_checks_config() -> SyntheticChecksConfig:
+    import os
+
     config_path = settings.synthetic_checks_config_path
-    if config_path:
+    if config_path and os.path.isfile(config_path):
         from ruamel.yaml import YAML
 
         ruyaml = YAML()

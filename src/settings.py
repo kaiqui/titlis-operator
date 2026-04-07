@@ -265,7 +265,7 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="SYNTHETIC_MONITOR_TIMEOUT_SECONDS"
     )
     synthetic_checks_config_path: Optional[str] = Field(
-        default=None, validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH"
+        default="config/synthetic-checks.yaml", validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH"
     )
 
     backstage_url: Optional[str] = Field(default=None, validation_alias="BACKSTAGE_URL")
