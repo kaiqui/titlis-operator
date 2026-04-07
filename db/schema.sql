@@ -1,13 +1,17 @@
 -- ================================================================
--- TITLIS OPERATOR — DATABASE SCHEMA
+-- TITLIS OPERATOR — DATABASE SCHEMA (COMPLETO)
 -- PostgreSQL 15+ | Estratégia: SCD Type 4 + Append-only Time-series
 -- ================================================================
--- Status: criado / não integrado ao operador
--- Gerado a partir de: docs/modelagem-dados.md
+-- Este arquivo é o schema autoritativo e completo do banco de dados.
+-- Inclui:
+--   • Estrutura OLTP original
+--   • Tabelas de audit (titlis_audit) e time-series (titlis_ts)
+--   • Extensão de auth/SSO (platform_users, tenant_auth_integrations,
+--     user_auth_identities, platform_user_invites)
+--   • API keys para autenticação do operator (tenant_api_keys)
 --
--- Compatível com o estado atual do operador (branch feat/slo-inteligent).
--- tenant_id nullable em todas as tabelas — permite operação single-tenant
--- hoje e habilita RLS multi-tenant na Fase 1 sem migração de schema.
+-- Usado pelo script scripts/deploy-minikube-preprod.sh para criar o
+-- ConfigMap postgres-schema-sql no kind/minikube.
 --
 -- Padrões adotados (revisão DBA):
 --   - PKs no formato <nome_da_tabela>_id com tipo BIGINT GENERATED ALWAYS AS IDENTITY
@@ -453,11 +457,200 @@ CREATE INDEX idx_slo_k8s_uid            ON titlis_oltp.slo_configs (k8s_resource
 CREATE INDEX idx_slo_detection_source   ON titlis_oltp.slo_configs (detection_source);
 
 -- ----------------------------------------------------------------
+-- platform_users
+-- Conta humana interna da plataforma.
+-- Suporta:
+--   - login local
+--   - conta bootstrap/admin inicial
+--   - conta break-glass
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_oltp.platform_users (
+    platform_user_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id        BIGINT NOT NULL REFERENCES titlis_oltp.tenants(tenant_id),
+    email            VARCHAR(320) NOT NULL,
+    display_name     VARCHAR(255),
+    password_hash    TEXT,
+    platform_role    VARCHAR(50) NOT NULL DEFAULT 'viewer',
+    is_active        BOOLEAN NOT NULL DEFAULT TRUE,
+    is_break_glass   BOOLEAN NOT NULL DEFAULT FALSE,
+    last_login_at    TIMESTAMPTZ,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, email),
+    CONSTRAINT chk_platform_users_role
+        CHECK (platform_role IN ('admin', 'engineer', 'pm', 'viewer'))
+);
+
+COMMENT ON TABLE titlis_oltp.platform_users IS
+'Usuarios humanos da plataforma Titlis; suportam login local, break-glass e vinculo com identidades externas.';
+COMMENT ON COLUMN titlis_oltp.platform_users.platform_user_id IS 'Chave primaria surrogate do usuario interno.';
+COMMENT ON COLUMN titlis_oltp.platform_users.tenant_id IS 'Tenant ao qual o usuario pertence.';
+COMMENT ON COLUMN titlis_oltp.platform_users.email IS 'Email de login do usuario no contexto do tenant.';
+COMMENT ON COLUMN titlis_oltp.platform_users.display_name IS 'Nome de exibicao do usuario.';
+COMMENT ON COLUMN titlis_oltp.platform_users.password_hash IS 'Hash da senha local; nullable quando o usuario usa apenas login federado.';
+COMMENT ON COLUMN titlis_oltp.platform_users.platform_role IS 'Papel base do usuario no tenant: admin, engineer, pm ou viewer.';
+COMMENT ON COLUMN titlis_oltp.platform_users.is_active IS 'Soft-delete da conta.';
+COMMENT ON COLUMN titlis_oltp.platform_users.is_break_glass IS 'Conta local de emergencia para acesso administrativo.';
+COMMENT ON COLUMN titlis_oltp.platform_users.last_login_at IS 'Ultima autenticacao bem-sucedida.';
+
+CREATE INDEX IF NOT EXISTS idx_platform_users_tenant
+    ON titlis_oltp.platform_users (tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_platform_users_active
+    ON titlis_oltp.platform_users (tenant_id, is_active);
+
+-- ----------------------------------------------------------------
+-- tenant_auth_integrations
+-- Configuracao de autenticacao por tenant.
+-- Modelagem generica para suportar Okta e outros provedores.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_auth_integrations (
+    tenant_auth_integration_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id                  BIGINT NOT NULL REFERENCES titlis_oltp.tenants(tenant_id),
+    provider_type              VARCHAR(50) NOT NULL,
+    integration_kind           VARCHAR(50) NOT NULL DEFAULT 'sso_oidc',
+    integration_name           VARCHAR(255) NOT NULL,
+    is_enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
+    is_primary                 BOOLEAN NOT NULL DEFAULT FALSE,
+    issuer_url                 VARCHAR(500),
+    client_id                  VARCHAR(255),
+    audience                   VARCHAR(255),
+    scopes                     VARCHAR(500),
+    config_json                JSONB,
+    configured_by_platform_user_id BIGINT REFERENCES titlis_oltp.platform_users(platform_user_id),
+    verified_at                TIMESTAMPTZ,
+    activated_at               TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_auth_provider_type
+        CHECK (provider_type IN ('okta', 'azure_ad', 'google_oidc', 'github_oidc', 'local')),
+    CONSTRAINT chk_auth_integration_kind
+        CHECK (integration_kind IN ('local_password', 'sso_oidc', 'saml'))
+);
+
+COMMENT ON TABLE titlis_oltp.tenant_auth_integrations IS
+'Configuracoes de autenticacao por tenant; modelagem generica para Okta e futuros provedores.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.tenant_auth_integration_id IS 'Chave primaria surrogate da integracao.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.tenant_id IS 'Tenant dono da configuracao.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.provider_type IS 'Tipo do provedor: okta, azure_ad, google_oidc, github_oidc ou local.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.integration_kind IS 'Tipo tecnico da integracao: local_password, sso_oidc ou saml.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.integration_name IS 'Nome amigavel da integracao no tenant.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.is_enabled IS 'Flag de ativacao da integracao.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.is_primary IS 'Define a integracao primaria de login do tenant.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.issuer_url IS 'Issuer do provedor OIDC/SAML.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.client_id IS 'Client ID da aplicacao registrada no provedor.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.audience IS 'Audience esperada dos tokens.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.scopes IS 'Scopes solicitados, persistidos como CSV simples.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.config_json IS 'Configuracao complementar e claims mapping em JSONB.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.configured_by_platform_user_id IS 'Usuario interno que configurou a integracao.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.verified_at IS 'Momento em que a integracao foi validada com sucesso.';
+COMMENT ON COLUMN titlis_oltp.tenant_auth_integrations.activated_at IS 'Momento em que a integracao passou a poder ser usada para login.';
+
+CREATE INDEX IF NOT EXISTS idx_tenant_auth_integrations_tenant
+    ON titlis_oltp.tenant_auth_integrations (tenant_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_auth_integrations_name
+    ON titlis_oltp.tenant_auth_integrations (tenant_id, integration_name);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_tenant_auth_integrations_primary
+    ON titlis_oltp.tenant_auth_integrations (tenant_id)
+    WHERE is_primary = TRUE;
+
+-- ----------------------------------------------------------------
+-- user_auth_identities
+-- Vincula uma conta interna a uma identidade externa do provedor.
+-- Exemplo:
+--   usuario local + identidade Okta
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_oltp.user_auth_identities (
+    user_auth_identity_id      BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    platform_user_id           BIGINT NOT NULL REFERENCES titlis_oltp.platform_users(platform_user_id) ON DELETE CASCADE,
+    tenant_auth_integration_id BIGINT NOT NULL REFERENCES titlis_oltp.tenant_auth_integrations(tenant_auth_integration_id) ON DELETE CASCADE,
+    provider_subject           VARCHAR(255) NOT NULL,
+    issuer_url                 VARCHAR(500),
+    email_snapshot             VARCHAR(320),
+    claims_snapshot            JSONB,
+    last_authenticated_at      TIMESTAMPTZ,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE titlis_oltp.user_auth_identities IS
+'Vinculo entre usuario interno e identidade externa do provedor de autenticacao.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.user_auth_identity_id IS 'Chave primaria surrogate da identidade externa vinculada.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.platform_user_id IS 'Usuario interno da plataforma.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.tenant_auth_integration_id IS 'Integracao pela qual a identidade foi autenticada.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.provider_subject IS 'Claim sub ou identificador principal do usuario no provedor.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.issuer_url IS 'Issuer observado no token/asserção.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.email_snapshot IS 'Email recebido do provedor na ultima sincronizacao relevante.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.claims_snapshot IS 'Snapshot parcial de claims para auditoria e troubleshooting.';
+COMMENT ON COLUMN titlis_oltp.user_auth_identities.last_authenticated_at IS 'Ultima autenticacao bem-sucedida por esta identidade.';
+
+CREATE INDEX IF NOT EXISTS idx_user_auth_identities_user
+    ON titlis_oltp.user_auth_identities (platform_user_id);
+
+CREATE INDEX IF NOT EXISTS idx_user_auth_identities_integration
+    ON titlis_oltp.user_auth_identities (tenant_auth_integration_id);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_auth_identities_subject
+    ON titlis_oltp.user_auth_identities (tenant_auth_integration_id, provider_subject);
+
+-- ----------------------------------------------------------------
+-- platform_user_invites
+-- Convites e preprovisionamento de usuarios.
+-- Suporta onboarding inicial e operacao posterior.
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_oltp.platform_user_invites (
+    platform_user_invite_id       BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    tenant_id                     BIGINT NOT NULL REFERENCES titlis_oltp.tenants(tenant_id),
+    email                         VARCHAR(320) NOT NULL,
+    target_role                   VARCHAR(50) NOT NULL DEFAULT 'viewer',
+    invite_status                 VARCHAR(50) NOT NULL DEFAULT 'pending',
+    tenant_auth_integration_id    BIGINT REFERENCES titlis_oltp.tenant_auth_integrations(tenant_auth_integration_id),
+    invited_by_platform_user_id   BIGINT REFERENCES titlis_oltp.platform_users(platform_user_id),
+    accepted_by_platform_user_id  BIGINT REFERENCES titlis_oltp.platform_users(platform_user_id),
+    invite_token                  VARCHAR(255),
+    expires_at                    TIMESTAMPTZ,
+    accepted_at                   TIMESTAMPTZ,
+    created_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at                    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT chk_platform_user_invites_role
+        CHECK (target_role IN ('admin', 'engineer', 'pm', 'viewer')),
+    CONSTRAINT chk_platform_user_invites_status
+        CHECK (invite_status IN ('pending', 'sent', 'accepted', 'expired', 'revoked'))
+);
+
+COMMENT ON TABLE titlis_oltp.platform_user_invites IS
+'Convites e preprovisionamento de usuarios para onboarding e operacao do tenant.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.platform_user_invite_id IS 'Chave primaria surrogate do convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.tenant_id IS 'Tenant destino do convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.email IS 'Email convidado.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.target_role IS 'Role alvo ao aceitar o convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.invite_status IS 'Estado do convite: pending, sent, accepted, expired ou revoked.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.tenant_auth_integration_id IS 'Integracao associada ao fluxo de convite, quando existir.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.invited_by_platform_user_id IS 'Usuario que gerou o convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.accepted_by_platform_user_id IS 'Usuario criado/associado ao aceitar o convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.invite_token IS 'Token do convite para onboarding ou preprovisionamento.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.expires_at IS 'Expiracao do convite.';
+COMMENT ON COLUMN titlis_oltp.platform_user_invites.accepted_at IS 'Momento de aceite.';
+
+CREATE INDEX IF NOT EXISTS idx_platform_user_invites_tenant
+    ON titlis_oltp.platform_user_invites (tenant_id);
+
+CREATE INDEX IF NOT EXISTS idx_platform_user_invites_status
+    ON titlis_oltp.platform_user_invites (tenant_id, invite_status);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_platform_user_invites_token
+    ON titlis_oltp.platform_user_invites (invite_token)
+    WHERE invite_token IS NOT NULL;
+
+-- ----------------------------------------------------------------
 -- tenant_api_keys  (autenticação do operator — modelo Datadog agent key)
 -- O operator envia api_key no envelope UDP em vez de tenant_id numérico.
 -- A API valida o hash, resolve o tenant e descarta o tenant_id fixo.
 -- key_hash = SHA-256 do token completo (lookup rápido sem bcrypt).
 -- key_prefix = primeiros 12 chars do token (exibição sem expor a key).
+-- Depende de platform_users — criada após as tabelas de auth.
 -- ----------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_api_keys (
     api_key_id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -497,7 +690,7 @@ CREATE INDEX IF NOT EXISTS idx_tenant_api_keys_tenant ON titlis_oltp.tenant_api_
 -- joins custosos em queries analíticas.
 -- A aplicação insere nesta tabela ao incrementar version em app_scorecards.
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_audit.app_scorecard_history (
+CREATE TABLE IF NOT EXISTS titlis_audit.app_scorecard_history (
     app_scorecard_history_id BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id              BIGINT      NOT NULL,
     tenant_id                BIGINT,
@@ -527,22 +720,22 @@ COMMENT ON COLUMN titlis_audit.app_scorecard_history.validation_results       IS
 COMMENT ON COLUMN titlis_audit.app_scorecard_history.evaluated_at             IS 'Timestamp da avaliação original (não do arquivamento)';
 COMMENT ON COLUMN titlis_audit.app_scorecard_history.k8s_event_type           IS 'Evento K8s que disparou a avaliação arquivada: resume, create ou update';
 
-CREATE INDEX idx_scorecard_hist_workload_time
+CREATE INDEX IF NOT EXISTS idx_scorecard_hist_workload_time
     ON titlis_audit.app_scorecard_history (workload_id, evaluated_at DESC);
 
-CREATE INDEX idx_scorecard_hist_compliance
+CREATE INDEX IF NOT EXISTS idx_scorecard_hist_compliance
     ON titlis_audit.app_scorecard_history (compliance_status, evaluated_at DESC);
 
-CREATE INDEX idx_scorecard_hist_pillar_gin
+CREATE INDEX IF NOT EXISTS idx_scorecard_hist_pillar_gin
     ON titlis_audit.app_scorecard_history USING GIN (pillar_scores);
 
-CREATE INDEX idx_scorecard_hist_validation_gin
+CREATE INDEX IF NOT EXISTS idx_scorecard_hist_validation_gin
     ON titlis_audit.app_scorecard_history USING GIN (validation_results);
 
 -- ----------------------------------------------------------------
 -- pillar_score_history  (granularidade fina por pilar — para gráficos de evolução)
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_audit.pillar_score_history (
+CREATE TABLE IF NOT EXISTS titlis_audit.pillar_score_history (
     pillar_score_history_id BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id             BIGINT      NOT NULL,
     tenant_id               BIGINT,
@@ -562,7 +755,7 @@ COMMENT ON COLUMN titlis_audit.pillar_score_history.workload_id              IS 
 COMMENT ON COLUMN titlis_audit.pillar_score_history.tenant_id                IS 'Referência lógica ao tenant (sem FK constraint)';
 COMMENT ON COLUMN titlis_audit.pillar_score_history.pillar_score             IS 'Score do pilar de 0 a 100 no momento do arquivamento';
 
-CREATE INDEX idx_pillar_hist_workload_pillar_time
+CREATE INDEX IF NOT EXISTS idx_pillar_hist_workload_pillar_time
     ON titlis_audit.pillar_score_history (workload_id, pillar, evaluated_at DESC);
 
 -- ----------------------------------------------------------------
@@ -571,7 +764,7 @@ CREATE INDEX idx_pillar_hist_workload_pillar_time
 -- app_remediation_status ou incremento de version em app_remediations
 -- (sem triggers DML).
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_audit.remediation_history (
+CREATE TABLE IF NOT EXISTS titlis_audit.remediation_history (
     remediation_history_id          BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id                     BIGINT      NOT NULL,
     tenant_id                       BIGINT,
@@ -599,10 +792,10 @@ COMMENT ON COLUMN titlis_audit.remediation_history.app_remediation_status       
 COMMENT ON COLUMN titlis_audit.remediation_history.previous_app_remediation_status          IS 'Estado anterior; permite reconstruir a máquina de estados';
 COMMENT ON COLUMN titlis_audit.remediation_history.issues_snapshot                          IS 'Snapshot das issues de remediação no momento da transição';
 
-CREATE INDEX idx_remediation_hist_workload_time
+CREATE INDEX IF NOT EXISTS idx_remediation_hist_workload_time
     ON titlis_audit.remediation_history (workload_id, triggered_at DESC);
 
-CREATE INDEX idx_remediation_hist_status
+CREATE INDEX IF NOT EXISTS idx_remediation_hist_status
     ON titlis_audit.remediation_history (app_remediation_status, created_at DESC);
 
 -- ----------------------------------------------------------------
@@ -610,7 +803,7 @@ CREATE INDEX idx_remediation_hist_status
 -- detected_framework / detection_source: auditoria de H-13
 -- (framework detectado incorretamente → fallback WSGI inesperado).
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_audit.slo_compliance_history (
+CREATE TABLE IF NOT EXISTS titlis_audit.slo_compliance_history (
     slo_compliance_history_id BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     slo_config_id             BIGINT      NOT NULL,
     namespace_id              BIGINT      NOT NULL,
@@ -641,17 +834,17 @@ COMMENT ON COLUMN titlis_audit.slo_compliance_history.sync_action            IS 
 COMMENT ON COLUMN titlis_audit.slo_compliance_history.detected_framework     IS 'Framework detectado nesta sincronização (auditoria de H-13)';
 COMMENT ON COLUMN titlis_audit.slo_compliance_history.detection_source       IS 'Origem da detecção: annotation, datadog_tag ou fallback';
 
-CREATE INDEX idx_slo_hist_config_time
+CREATE INDEX IF NOT EXISTS idx_slo_hist_config_time
     ON titlis_audit.slo_compliance_history (slo_config_id, recorded_at DESC);
 
-CREATE INDEX idx_slo_hist_detection
+CREATE INDEX IF NOT EXISTS idx_slo_hist_detection
     ON titlis_audit.slo_compliance_history (detected_framework, detection_source)
     WHERE detected_framework IS NOT NULL;
 
 -- ----------------------------------------------------------------
 -- notification_log  (auditoria de todas as notificações Slack)
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_audit.notification_log (
+CREATE TABLE IF NOT EXISTS titlis_audit.notification_log (
     notification_log_id   BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id           BIGINT,
     namespace_id          BIGINT,
@@ -680,10 +873,10 @@ COMMENT ON COLUMN titlis_audit.notification_log.sent_at                IS 'Times
 COMMENT ON COLUMN titlis_audit.notification_log.success                IS 'True se o envio foi confirmado pela API do Slack';
 COMMENT ON COLUMN titlis_audit.notification_log.error_message          IS 'Mensagem de erro em caso de falha no envio';
 
-CREATE INDEX idx_notif_log_workload_time
+CREATE INDEX IF NOT EXISTS idx_notif_log_workload_time
     ON titlis_audit.notification_log (workload_id, created_at DESC);
 
-CREATE INDEX idx_notif_log_namespace_time
+CREATE INDEX IF NOT EXISTS idx_notif_log_namespace_time
     ON titlis_audit.notification_log (namespace_id, created_at DESC);
 
 -- ================================================================
@@ -694,7 +887,7 @@ CREATE INDEX idx_notif_log_namespace_time
 -- resource_metrics  (CPU/memória coletados do Datadog)
 -- Candidato a hypertable do TimescaleDB em produção.
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_ts.resource_metrics (
+CREATE TABLE IF NOT EXISTS titlis_ts.resource_metrics (
     resource_metric_id    BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id           BIGINT      NOT NULL,
     tenant_id             BIGINT,
@@ -729,14 +922,14 @@ COMMENT ON COLUMN titlis_ts.resource_metrics.suggested_mem_limit     IS 'Memory 
 COMMENT ON COLUMN titlis_ts.resource_metrics.sample_window           IS 'Janela de amostragem: 1h, 24h ou 7d';
 COMMENT ON COLUMN titlis_ts.resource_metrics.collected_at            IS 'Timestamp da coleta';
 
-CREATE INDEX idx_resource_metrics_workload_time
+CREATE INDEX IF NOT EXISTS idx_resource_metrics_workload_time
     ON titlis_ts.resource_metrics (workload_id, collected_at DESC);
 
 -- ----------------------------------------------------------------
 -- scorecard_scores  (série temporal plana para dashboards Grafana/Metabase)
 -- Desnormalizado intencionalmente: elimina joins em tempo de query.
 -- ----------------------------------------------------------------
-CREATE TABLE titlis_ts.scorecard_scores (
+CREATE TABLE IF NOT EXISTS titlis_ts.scorecard_scores (
     scorecard_score_id BIGINT      GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     workload_id        BIGINT      NOT NULL,
     tenant_id          BIGINT,
@@ -761,12 +954,12 @@ COMMENT ON COLUMN titlis_ts.scorecard_scores.overall_score        IS 'Score glob
 COMMENT ON COLUMN titlis_ts.scorecard_scores.compliance_status    IS 'Status de compliance no momento do registro: COMPLIANT, NON_COMPLIANT, UNKNOWN, PENDING';
 COMMENT ON COLUMN titlis_ts.scorecard_scores.recorded_at          IS 'Timestamp de inserção; eixo X de todos os gráficos de evolução';
 
-CREATE INDEX idx_score_ts_workload_time
+CREATE INDEX IF NOT EXISTS idx_score_ts_workload_time
     ON titlis_ts.scorecard_scores (workload_id, recorded_at DESC);
 
 -- índice por tempo sem predicado now() — predicado com now() vira constante
 -- em índices parciais e fica obsoleto. Usar filtro na query.
-CREATE INDEX idx_score_ts_recorded_at
+CREATE INDEX IF NOT EXISTS idx_score_ts_recorded_at
     ON titlis_ts.scorecard_scores (recorded_at DESC);
 
 -- ================================================================
@@ -878,12 +1071,12 @@ ORDER BY
 -- ================================================================
 
 -- OLTP — leituras do frontend
-CREATE INDEX idx_workloads_namespace      ON titlis_oltp.workloads (namespace_id)
+CREATE INDEX IF NOT EXISTS idx_workloads_namespace      ON titlis_oltp.workloads (namespace_id)
     WHERE is_active = TRUE;
-CREATE INDEX idx_scorecard_compliance     ON titlis_oltp.app_scorecards (compliance_status);
-CREATE INDEX idx_scorecard_score          ON titlis_oltp.app_scorecards (overall_score);
-CREATE INDEX idx_remediation_status       ON titlis_oltp.app_remediations (app_remediation_status);
-CREATE INDEX idx_val_results_rule_passed  ON titlis_oltp.validation_results (validation_rule_id, rule_passed);
+CREATE INDEX IF NOT EXISTS idx_scorecard_compliance     ON titlis_oltp.app_scorecards (compliance_status);
+CREATE INDEX IF NOT EXISTS idx_scorecard_score          ON titlis_oltp.app_scorecards (overall_score);
+CREATE INDEX IF NOT EXISTS idx_remediation_status       ON titlis_oltp.app_remediations (app_remediation_status);
+CREATE INDEX IF NOT EXISTS idx_val_results_rule_passed  ON titlis_oltp.validation_results (validation_rule_id, rule_passed);
 
 -- ================================================================
 -- ROLES E PERMISSÕES
