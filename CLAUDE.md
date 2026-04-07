@@ -1,130 +1,428 @@
-# CLAUDE.md — Titlis Operator
+# CLAUDE.md — titlis-operator
 
-> Instrução obrigatória: **Após cada alteração no código, execute lint e testes:**
+> **Regra obrigatória após cada alteração:**
 > ```bash
 > make lint && make test-unit
 > ```
 > Nunca entregue código sem confirmar que lint e testes passam.
 >
-> **Lint padrão: flake8** — é o único linter de estilo a ser respeitado como gate obrigatório.
-> Configuração em `.flake8` na raiz do projeto.
+> **Linter de estilo: flake8** — único gate obrigatório de estilo. Config em `.flake8`.
 >
-> **Regra de docstrings: proibido usar docstrings** (D100–D107 ignorados no flake8).
-> Não adicione docstrings de módulo, classe ou função. O código deve ser autoexplicativo.
+> **Proibido usar docstrings** (D100–D107 ignorados no flake8). O código deve ser autoexplicativo.
 
 ---
 
-## 1. Visão Geral da Arquitetura
+## 1. Visão Geral
 
-O **Titlis Operator** é um Kubernetes Operator escrito em Python (Kopf) que automatiza governança, compliance e remediação inteligente de workloads em clusters Kubernetes.
+O **titlis-operator** é um Kubernetes Operator escrito em Python (Kopf) que automatiza:
 
-### Pilares Funcionais
+- **Scoring de compliance** — avalia Deployments contra 26+ regras em 6 pilares
+- **Auto-remediação** — abre PRs no GitHub corrigindo recursos e HPA
+- **SLO sync** — sincroniza SLOs declarativos com Datadog (3-path idempotency)
+- **Notificações Slack** — alerts e digests por namespace (rate-limited)
+- **Enriquecimento** — integra Backstage (ownership) e CAST AI (custo)
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Titlis Operator                       │
-│                                                         │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │  Scorecard   │  │     SLO      │  │ Auto-Remedia-│  │
-│  │  Controller  │  │  Controller  │  │    tion       │  │
-│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
-│         │                 │                  │          │
-│  ┌──────▼─────────────────▼──────────────────▼───────┐  │
-│  │              Application Services                  │  │
-│  │  ScorecardService │ SLOService │ RemediationService│  │
-│  └──────┬─────────────────┬──────────────────┬───────┘  │
-│         │                 │                  │          │
-│  ┌──────▼─────────────────▼──────────────────▼───────┐  │
-│  │              Infrastructure Adapters               │  │
-│  │   Datadog  │  GitHub  │  Slack  │  Kubernetes      │  │
-│  └────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────┘
-```
-
-### Fluxo Principal (Scorecard + Remediação)
-
-```
-Deployment criado/atualizado
-        │
-        ▼
-ScorecardController.on_resource_event()
-        │
-        ├─► ScorecardService.evaluate_resource()
-        │       └─► 26+ regras validadas (6 pilares)
-        │
-        ├─► RemediationService.create_remediation_pr()  [se há issues remediáveis]
-        │       ├─► Extrai DD_GIT_REPOSITORY_URL do Deployment
-        │       ├─► Busca métricas de CPU/mem no Datadog
-        │       ├─► Modifica deploy.yaml (nunca reduz valores)
-        │       ├─► Cria branch + commit + Pull Request no GitHub
-        │       └─► Notifica no Slack
-        │
-        ├─► RemediationWriter → AppRemediation CRD
-        ├─► AppScorecardWriter → AppScorecard CRD
-        └─► NamespaceNotificationBuffer → Slack digest
-```
-
-### Arquitetura Hexagonal (Ports & Adapters)
-
-```
-Domain Models  ←→  Application Services  ←→  Ports (interfaces)
-                                                     ↕
-                                           Infrastructure Adapters
-                                       (GitHub, Datadog, Slack, K8s)
-```
+O operator também envia todos os eventos para o **titlis-api** via UDP:8125, que persiste no
+PostgreSQL para o dashboard.
 
 ---
 
-## 2. Stack Tecnológico Completo
+## 2. Stack
 
 | Categoria | Tecnologia | Versão |
 |---|---|---|
 | Linguagem | Python | 3.12 |
 | K8s Operator Framework | Kopf | >=1.39.0 |
-| Configuração | Pydantic + pydantic-settings | >=2.12.0 |
-| HTTP Client (async) | httpx | >=0.27.0 |
-| Slack SDK | slack-sdk | >=3.39.0 |
-| Datadog Client | datadog-api-client | >=2.47.0 |
-| Kubernetes Client | kubernetes | >=34.1.0 |
-| YAML (preserva formatação) | ruamel.yaml | >=0.18.0 |
-| Logging JSON | python-json-logger + structlog | >=4.0.0 / >=25.5.0 |
+| Config/Validação | Pydantic + pydantic-settings | >=2.12.0 |
+| HTTP Client | httpx (async) | >=0.27.0 |
+| Slack | slack-sdk | >=3.39.0 |
+| Datadog | datadog-api-client | >=2.47.0 |
+| Kubernetes | kubernetes | >=34.1.0 |
+| YAML (round-trip) | ruamel.yaml | >=0.18.0 |
+| Logging JSON | python-json-logger + structlog | >=4.0.0 |
 | Retry | backoff | >=2.2.1 |
+| Package Manager | Poetry | — |
 | Testes | pytest + pytest-asyncio + pytest-mock | >=9.0.0 |
 | Formatação | black | >=23.11.0 |
-| Linting | flake8, mypy, pylint, ruff | múltiplos |
-| Segurança | bandit, safety | múltiplos |
-| Containerização | Docker (python:3.12-slim-bullseye) | - |
-| Package Manager | Poetry | - |
-| Deploy | Helm (charts/titlis-operator/) | - |
+| Linting | flake8, mypy, pylint | — |
+| Container | python:3.12-slim-bullseye | — |
+| Deploy | Helm (charts/titlis-operator/) | — |
 
 ---
 
-## 3. Todas as Variáveis de Ambiente
+## 3. Arquitetura Hexagonal
+
+```
+Domain Models (src/domain/)
+       ↕
+Application Services (src/application/services/)
+       ↕
+Ports / Interfaces (src/application/ports/)
+       ↕
+Infrastructure Adapters (src/infrastructure/)
+  ├── datadog/        DatadogRepository
+  ├── github/         GitHubRepository
+  ├── slack/          SlackRepository
+  ├── kubernetes/     AppScorecardWriter, RemediationWriter, K8sStatusWriter
+  ├── backstage/      BackstageEnricher
+  ├── castai/         CastaiCostEnricher
+  └── titlis_api/     TitlisApiUdpClient
+
+Controllers (src/controllers/) — thin Kopf handlers
+Bootstrap (src/bootstrap/dependencies.py) — DI via @lru_cache
+```
+
+**Regra:** Services nunca importam infrastructure diretamente — usam Ports (interfaces).
+
+---
+
+## 4. Estrutura de Diretórios
+
+```
+src/
+├── main.py                              # Entry point Kopf + registro de handlers
+├── settings.py                          # Pydantic Settings (todas as env vars)
+├── bootstrap/
+│   └── dependencies.py                  # DI: get_slo_service(), get_scorecard_service(), etc.
+├── controllers/
+│   ├── base.py                          # BaseController (Slack, status, helpers)
+│   ├── scorecard_controller.py          # on_resource_event() para Deployments
+│   ├── slo_controller.py                # on_slo_config_change() para SLOConfig CRDs
+│   ├── castai_monitor_controller.py     # Loop periódico de saúde CAST AI
+│   └── synthetic_monitor_controller.py  # Engine config-driven: 1 task por check
+├── application/
+│   ├── ports/
+│   │   ├── datadog_port.py
+│   │   ├── github_port.py
+│   │   ├── slack_port.py
+│   │   └── titlis_api_port.py
+│   └── services/
+│       ├── scorecard_service.py         # evaluate_resource() — 26+ regras
+│       ├── remediation_service.py       # create_remediation_pr()
+│       ├── slo_service.py               # reconcile_slo() — 3-path idempotency
+│       ├── slo_metrics_service.py       # Emissão de métricas de SLO
+│       ├── slack_service.py             # Rate-limited Slack dispatch
+│       ├── scorecard_enricher.py        # Backstage + CAST AI enrichment
+│       └── namespace_notification_buffer.py  # Digest de notificações por namespace
+├── domain/
+│   ├── models.py                        # SLOConfigSpec, ResourceScorecard, Enums
+│   ├── github_models.py                 # RemediationRequest, PullRequestResult
+│   └── slack_models.py                  # NotificationSeverity, SlackNotification
+├── infrastructure/
+│   ├── datadog/
+│   │   ├── repository.py                # DatadogPort impl
+│   │   ├── client.py                    # Low-level Datadog API wrapper
+│   │   ├── factory.py                   # Factory de managers
+│   │   └── managers/                    # SLO, metrics, synthetic_metrics, gauge_metric
+│   ├── github/
+│   │   ├── repository.py                # GitHubPort impl
+│   │   └── client.py                    # httpx async wrapper
+│   ├── slack/
+│   │   ├── repository.py                # SlackPort impl
+│   │   └── message_builder.py           # Formatação de mensagens
+│   ├── kubernetes/
+│   │   ├── appscorecard_writer.py       # Upsert AppScorecard CRD
+│   │   ├── remediation_writer.py        # Cria AppRemediation CRD
+│   │   ├── k8s_status_writer.py         # Atualiza .status subresource
+│   │   ├── castai_health.py             # Health check CAST AI agent
+│   │   └── state_store.py               # Set in-memory de remediações pendentes
+│   ├── backstage/
+│   │   └── enricher.py
+│   ├── castai/
+│   │   └── cost_enricher.py
+│   ├── synthetic/
+│   │   ├── check_config.py              # Modelos Pydantic: SiteHealthCheckConfig, JsonValueCheckConfig
+│   │   ├── json_value_checker.py        # GET + dot-path JSON extraction → JsonValueCheckResult
+│   │   └── site_health.py
+│   └── titlis_api/
+│       └── udp_client.py                # Envia eventos UDP/HTTP para titlis-api
+└── utils/
+    ├── json_logger.py
+    └── logging_bootstrap.py
+```
+
+---
+
+## 5. CRDs Gerenciados
+
+### AppScorecard (titlis.io/v1) — short: `asc`
+Estado de compliance de um Deployment.
+
+**targetRef** (spec): referência ao Deployment avaliado.
+
+**status** (calculado pelo operator):
+```yaml
+overallScore: 87
+complianceStatus: compliant  # compliant | non_compliant | unknown | pending
+criticalIssues: 0
+errorIssues: 2
+pillars:
+  - name: resilience
+    score: 90
+    passedChecks: 8
+    totalChecks: 9
+findings:
+  - ruleId: RES-003
+    pillar: resilience
+    severity: error
+    passed: false
+    message: "CPU request não definido"
+    actual: null
+    expected: "100m"
+remediation:
+  prNumber: 42
+  prUrl: "https://github.com/org/repo/pull/42"
+  status: PRCreated
+```
+
+### AppRemediation (titlis.io/v1) — short: `ar`
+Estado de PR de auto-remediação.
+
+**spec**: `targetRef`, `issuesFixed[]`, `baseBranch`
+
+**status**:
+```yaml
+phase: PRCreated  # PRCreated | PRMerged | PRClosed | Failed
+prNumber: 42
+prUrl: "https://github.com/..."
+prBranch: "fix/auto-remediation-default-my-app-20240101120000"
+issueCount: 3
+```
+
+### SLOConfig (titlis.io/v1) — short: `sloc`
+SLO declarativo sincronizado com Datadog.
+
+**spec**:
+```yaml
+service: my-api
+type: metric         # metric | monitor
+target: 99.9
+warning: 99.0
+timeframe: 30d       # 7d | 30d | 90d
+# Escolha UMA das opções:
+app_framework: wsgi  # OU:
+# numerator: "sum:trace.flask.request.hits..."
+# denominator: "sum:trace.flask.request.hits..."
+# auto_detect_framework: true
+tags:
+  - team:backend
+```
+
+**status**:
+```yaml
+slo_id: "abc123"          # ID no Datadog após criação
+state: ok                 # ok | error
+last_sync: "2024-01-01T00:00:00Z"
+detected_framework: wsgi  # se auto_detect_framework
+```
+
+---
+
+## 6. Fluxo do ScorecardController
+
+```
+Deployment criado/atualizado/resumido
+         │
+         ▼
+on_resource_event(body, event_type)
+         │
+         ├── Namespace excluído? (kube-system, datadog, etc.) → skip
+         │
+         ├── ScorecardService.evaluate_resource()
+         │       └── 26+ regras, 6 pilares, score ponderado
+         │
+         ├── Findings remediáveis? → RemediationService.create_remediation_pr()
+         │       ├── Extrai DD_GIT_REPOSITORY_URL do Deployment
+         │       ├── Busca métricas CPU/mem no Datadog (profiling)
+         │       ├── Lê manifests/kubernetes/main/deploy.yaml (ruamel.yaml)
+         │       ├── Modifica resources.requests/limits (NUNCA reduz)
+         │       ├── Cria/atualiza HPA YAML
+         │       ├── Cria branch + commit + PR no GitHub
+         │       └── Verifica PR existente (idempotência)
+         │
+         ├── RemediationWriter.record() → AppRemediation CRD
+         ├── AppScorecardWriter.upsert() → AppScorecard CRD
+         ├── NamespaceNotificationBuffer.add_and_maybe_flush()
+         │       └── Flush a cada 15min ou 10+ apps no namespace
+         └── TitlisApiUdpClient.send_scorecard_evaluated() → titlis-api:8125
+```
+
+**Namespaces excluídos por padrão:**
+`kube-system`, `kube-public`, `kube-node-lease`, `datadog`, `titlis-operator`, `titlis-system`
+
+---
+
+## 7. Fluxo do SLOController — 3-Path Idempotency
+
+```
+SLOConfig criado/atualizado
+         │
+         ▼
+on_slo_config_change(body, event_type)
+         │
+         ├── Valida spec (service obrigatório, warning > target, targets 0-100)
+         │
+         ├── Detecta framework (3 fontes, por precedência):
+         │       1. spec.app_framework (explícito)
+         │       2. metadata.annotations["titlis.io/app-framework"]
+         │       3. Datadog ServiceDefinition.tags "framework:*"
+         │       4. Fallback: "wsgi"
+         │
+         ├── SLOService.reconcile_slo() — 3 paths:
+         │       Path A (restart fast): status.slo_id presente → usa diretamente
+         │       Path B (orphan safety): busca por tag titlis_resource_uid:<uid>
+         │       Path C (normal): lista SLOs do serviço → busca match → cria se não existe
+         │
+         ├── Atualiza status com slo_id, detected_framework, state
+         ├── Notifica Slack (ALERTS se erro, OPERATIONAL se sucesso)
+         ├── Emite métricas: record_reconciliation(success, action, slo_type)
+         └── TitlisApiUdpClient.send_slo_reconciled()
+```
+
+---
+
+## 8. Padrões Críticos de Implementação
+
+### Never-Reduce (recursos de Deployment)
+```python
+def _keep_max(current: str, suggested: str, parser: Callable) -> str:
+    return suggested if parser(suggested) >= parser(current) else current
+```
+**Regra:** CPU requests, CPU limits, memory requests, memory limits nunca são reduzidos.
+Aplique este padrão a qualquer lógica que modifique recursos de containers.
+
+### HPA utilization — usar MIN
+```python
+cpu_util = min(current_cpu_util, default) if current_cpu_util else default
+```
+**Razão:** Menor target de utilização = escala mais agressivamente = maior resiliência.
+É o oposto da lógica de recursos.
+
+### Idempotência de PR
+```python
+# Antes de criar PR, sempre verificar:
+# 1. Set in-memory (_pending) para evitar duplicatas na mesma sessão
+# 2. GitHub API: find_open_remediation_pr() para evitar duplicatas entre restarts
+```
+
+### YAML Round-Trip
+```python
+# Sempre usar ruamel.yaml (não PyYAML) para ler/modificar deploy.yaml
+# Preserva comentários, formatação e ordem de chaves
+from ruamel.yaml import YAML
+yaml = YAML()
+yaml.preserve_quotes = True
+```
+
+### Pesos dos pilares
+```python
+PILLAR_WEIGHTS = {
+    "resilience": 0.40,
+    "performance": 0.20,
+    "security": 0.15,
+    "cost": 0.10,
+    "operational": 0.10,
+    "compliance": 0.05,
+}
+# Score geral = média ponderada dos pilares
+```
+
+### Dependency Injection
+```python
+# bootstrap/dependencies.py — sempre @lru_cache() para singletons
+@lru_cache()
+def get_slo_service() -> Optional[SLOService]:
+    if not settings.enable_slo_controller:
+        return None
+    return SLOService(get_datadog_repository())
+```
+
+---
+
+## 9. Integrações Externas
+
+### Datadog
+| Operação | Finalidade |
+|---|---|
+| `get_service_definition(service)` | Framework, team, tier do catálogo Datadog |
+| `get_service_slos(service)` | Lista SLOs existentes para o serviço |
+| `create_slo(slo)` | Cria novo SLO no Datadog |
+| `update_slo_apps(slo_id, slo)` | Atualiza queries/thresholds de SLO existente |
+| `find_slo_by_tags(tags)` | Busca por tag `titlis_resource_uid:<uid>` (orphan detection) |
+| `get_container_metrics(name, namespace)` | CPU/mem histórico para defaults de remediação |
+| `get_request_count(service, days)` | RPM para detectar criticidade de workload |
+
+Auth: `DD_API_KEY` + `DD_APP_KEY`
+
+### GitHub
+| Operação | Finalidade |
+|---|---|
+| `branch_exists(owner, repo, branch)` | Evita criar branch duplicada |
+| `create_branch(...)` | Cria branch de remediação |
+| `get_file_content(owner, repo, path, ref)` | Lê `manifests/kubernetes/main/deploy.yaml` |
+| `commit_files(...)` | Commita deploy.yaml modificado |
+| `create_pull_request(...)` | Cria PR com descrição detalhada |
+| `find_open_remediation_pr(...)` | Detecta PR existente (idempotência cross-restart) |
+
+Auth: `GITHUB_TOKEN`
+
+Branch naming: `fix/auto-remediation-{namespace}-{deployment}-{timestamp}`
 
 ### Slack
+- Rate limiting: 60/min e 360/hora por padrão
+- Severity → channel: CRITICAL/ERROR → alerts, WARNING/INFO → operational
+- Digests de namespace: flush a cada 15min ou 10+ apps
+- Auth: `SLACK_WEBHOOK_URL` (webhook) ou `SLACK_BOT_TOKEN` (bot API)
 
+### Titlis API (UDP)
+```python
+# Eventos enviados (fire-and-forget, falhas não bloqueiam reconciliação)
+await titlis_client.send_scorecard_evaluated(scorecard, workload_meta, tenant_id)
+await titlis_client.send_slo_reconciled(slo_config, result, tenant_id)
+await titlis_client.send_notification_log(severity, message, channel, tenant_id)
+```
+Habilitado por `TITLIS_API_ENABLED=true`. Host padrão: `titlis-api.titlis-system.svc.cluster.local`.
+
+---
+
+## 10. Variáveis de Ambiente
+
+### Operador e Feature Flags
 ```bash
-SLACK_ENABLED=true
-SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_CLIENT_ID=...
-SLACK_CLIENT_SECRET=...
-SLACK_DEFAULT_CHANNEL=#titlis-notifications
-SLACK_RATE_LIMIT_PER_MINUTE=60
-SLACK_RATE_LIMIT_PER_HOUR=360
-SLACK_TIMEOUT_SECONDS=10.0
-SLACK_MAX_RETRIES=3
-SLACK_ENABLED_SEVERITIES=info,warning,error,critical
-SLACK_ENABLED_CHANNELS=operational,alerts
-SLACK_MESSAGE_TITLE=Kopf Operator Notification
-SLACK_INCLUDE_TIMESTAMP=true
-SLACK_INCLUDE_CLUSTER_INFO=true
-SLACK_INCLUDE_NAMESPACE=true
-SLACK_MAX_MESSAGE_LENGTH=3000
+KUBERNETES_NAMESPACE=titlis-system
+KUBERNETES_CLUSTER_NAME=unknown
+RECONCILE_INTERVAL_SECONDS=300
+DEBOUNCE_SECONDS=30
+ENABLE_LEADER_ELECTION=true
+LOG_LEVEL=DEBUG
+LOG_FORMAT=json
+
+ENABLE_SCORECARD_CONTROLLER=true
+ENABLE_SLO_CONTROLLER=true
+ENABLE_AUTO_REMEDIATION=true
+ENABLE_CASTAI_MONITOR=false
+ENABLE_SYNTHETIC_MONITOR=false
+SYNTHETIC_CHECKS_CONFIG_PATH=/etc/titlis/synthetic-checks.yaml  # se omitida usa vars legadas abaixo
+SYNTHETIC_MONITOR_NAME=jeitto-homepage    # legado: nome do único check
+SYNTHETIC_MONITOR_URL=https://jeitto.com.br  # legado: URL do único check
+SYNTHETIC_MONITOR_INTERVAL_SECONDS=60    # legado
+SYNTHETIC_MONITOR_TIMEOUT_SECONDS=10.0   # legado
+ENABLE_BACKSTAGE_ENRICHMENT=false
+ENABLE_CASTAI_COST_ENRICHMENT=false
+```
+
+### Datadog
+```bash
+DD_API_KEY=...
+DD_APP_KEY=...
+DD_SITE=datadoghq.com       # EU: datadoghq.eu
+DD_ENV=production
+DD_SERVICE=titlis-operator
+# Obrigatório NO DEPLOYMENT avaliado para auto-remediação:
+DD_GIT_REPOSITORY_URL=https://github.com/org/repo
 ```
 
 ### GitHub
-
 ```bash
 GITHUB_ENABLED=true
 GITHUB_TOKEN=ghp_...
@@ -132,85 +430,48 @@ GITHUB_BASE_BRANCH=develop
 GITHUB_TIMEOUT_SECONDS=30.0
 ```
 
-### Auto-Remediação — Defaults de Recursos
-
+### Remediação — Defaults
 ```bash
 REMEDIATION_DEFAULT_CPU_REQUEST=100m
 REMEDIATION_DEFAULT_CPU_LIMIT=500m
 REMEDIATION_DEFAULT_MEMORY_REQUEST=128Mi
 REMEDIATION_DEFAULT_MEMORY_LIMIT=512Mi
-```
-
-### Auto-Remediação — HPA
-
-```bash
 REMEDIATION_HPA_MIN_REPLICAS=2
 REMEDIATION_HPA_MAX_REPLICAS=10
 REMEDIATION_HPA_CPU_UTILIZATION=70
 REMEDIATION_HPA_MEMORY_UTILIZATION=80
+REMEDIATION_HPA_BEHAVIOR_SCALE_UP_PODS=4
+REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_PODS=1
+REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_STABILIZATION=300
 ```
 
-### Datadog
-
+### Slack
 ```bash
-DD_API_KEY=...
-DD_APP_KEY=...
-DD_SITE=datadoghq.com
-DD_ENV=production
-DD_SERVICE=titlis-operator
-# Obrigatório no env do Deployment para auto-remediação:
-DD_GIT_REPOSITORY_URL=https://github.com/org/repo
+SLACK_ENABLED=true
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_DEFAULT_CHANNEL=#titlis-notifications
+SLACK_RATE_LIMIT_PER_MINUTE=60
+SLACK_RATE_LIMIT_PER_HOUR=360
+SLACK_TIMEOUT_SECONDS=10.0
+SLACK_MAX_RETRIES=3
+SLACK_ENABLED_SEVERITIES=info,warning,error,critical
+SLACK_ENABLED_CHANNELS=operational,alerts
+SLACK_MAX_MESSAGE_LENGTH=3000
+SLACK_INCLUDE_TIMESTAMP=true
+SLACK_INCLUDE_CLUSTER_INFO=true
 ```
 
-### Kubernetes
-
+### Titlis API
 ```bash
-KUBERNETES_NAMESPACE=titlis-system
-SERVICE_ACCOUNT_NAME=titlis-operator
+TITLIS_API_ENABLED=false
+TITLIS_API_HOST=titlis-api.titlis-system.svc.cluster.local
+TITLIS_API_UDP_PORT=8125
+TITLIS_API_HTTP_PORT=8080
+TITLIS_API_DEFAULT_TENANT_ID=1
 ```
 
-### Operador
-
-```bash
-RECONCILE_INTERVAL_SECONDS=300
-DEBOUNCE_SECONDS=30
-ENABLE_LEADER_ELECTION=true
-LEADER_ELECTION_NAMESPACE=titlis
-LOG_LEVEL=DEBUG
-LOG_FORMAT=json
-METRICS_ENABLED=true
-TRACING_ENABLED=false
-```
-
-### Feature Flags
-
-```bash
-ENABLE_SCORECARD_CONTROLLER=true
-ENABLE_SLO_CONTROLLER=true
-ENABLE_AUTO_REMEDIATION=true
-ENABLE_CASTAI_MONITOR=false
-ENABLE_BACKSTAGE_ENRICHMENT=false
-ENABLE_CASTAI_COST_ENRICHMENT=false
-```
-
-### Titlis API (comunicação operator → banco)
-
-```bash
-# Titlis API — comunicação operator → banco
-TITLIS_API_ENABLED=false                                                  # feature flag
-TITLIS_API_HOST=titlis-api.titlis-system.svc.cluster.local                # hostname do serviço
-TITLIS_API_UDP_PORT=8125                                                   # porta TitlisUDP
-TITLIS_API_HTTP_PORT=8080                                                  # porta REST
-
-# Titlis API — banco de dados (configurado na API, não no operador)
-DATABASE_URL=jdbc:postgresql://postgres:5432/titlis
-DATABASE_USER=titlis_operator
-DATABASE_PASSWORD=<secret>
-DB_POOL_MAX=10
-```
-
-### Integrações Opcionais
-
+### Integrações opcionais
 ```bash
 BACKSTAGE_URL=https://backstage.company.com
 BACKSTAGE_TOKEN=...
@@ -219,708 +480,205 @@ BACKSTAGE_CACHE_TTL_SECONDS=300
 CASTAI_API_KEY=...
 CASTAI_CLUSTER_ID=...
 CASTAI_CLUSTER_NAME=develop
-CASTAI_COST_CACHE_TTL_SECONDS=300
 CASTAI_MONITOR_NAMESPACE=castai-agent
 CASTAI_MONITOR_INTERVAL_SECONDS=60
+CASTAI_COST_CACHE_TTL_SECONDS=300
 ```
 
 ---
 
-## 4. Estrutura de Diretórios
+## 11. Comandos
 
+```bash
+make dev-install          # Instala deps com dev (poetry install)
+make test                 # pytest tests/ -v (todos)
+make test-unit            # pytest tests/unit/ -v
+make test-integration     # pytest tests/integration/ -v
+make test-coverage        # Com relatório de cobertura (meta: >=70%)
+make lint                 # black check + flake8 + mypy + pylint
+make format               # black src/ tests/ (auto-format)
+make run                  # Roda localmente (precisa kubeconfig + env vars)
+make dev                  # clean + dev-install + test + lint (gate completo)
+make clean                # Remove .coverage, __pycache__, etc.
+
+# Testes por padrão
+make test-pattern PATTERN=remediation   # Filtra por nome
+make test-datadog                       # Apenas testes Datadog
+make test-slack                         # Apenas testes Slack
+make test-services                      # Apenas application services
+make test-controllers                   # Apenas controllers
 ```
-jt-operator/
-├── charts/titlis-operator/           # Helm chart
-│   ├── crds/
-│   │   ├── appremediations.titlis.io.yaml
-│   │   ├── appscorecards.titlis.io.yaml
-│   │   └── sloconfs.titlis.io.yaml
-│   ├── templates/
-│   │   ├── configmap.yaml
-│   │   ├── deployment.yaml
-│   │   ├── rbac.yaml
-│   │   ├── service.yaml
-│   │   └── serviceaccount.yaml
-│   ├── Chart.yaml
-│   └── values.yaml
-├── config/
-│   ├── env-validation-rules.yaml     # Regras de validação de env vars
-│   └── scorecard-config.yaml         # Configuração de regras do scorecard
-├── docs/
-│   └── guia-extensao-scorecard.md
-├── src/
-│   ├── application/
-│   │   ├── ports/                    # Interfaces (Hexagonal)
-│   │   │   ├── datadog_port.py
-│   │   │   ├── github_port.py
-│   │   │   └── slack_port.py
-│   │   └── services/                 # Lógica de negócio
-│   │       ├── namespace_notification_buffer.py
-│   │       ├── remediation_service.py
-│   │       ├── scorecard_enricher.py
-│   │       ├── scorecard_service.py
-│   │       ├── slack_service.py
-│   │       ├── slo_metrics_service.py
-│   │       └── slo_service.py
-│   ├── bootstrap/
-│   │   └── dependencies.py           # Container de DI com @lru_cache
-│   ├── controllers/                  # Handlers Kopf
-│   │   ├── base.py
-│   │   ├── castai_monitor_controller.py
-│   │   ├── scorecard_controller.py
-│   │   └── slo_controller.py
-│   ├── domain/                       # Modelos de domínio puros
-│   │   ├── enriched_scorecard.py
-│   │   ├── github_models.py
-│   │   ├── models.py
-│   │   └── slack_models.py
-│   ├── infrastructure/               # Adapters externos
-│   │   ├── backstage/
-│   │   │   └── enricher.py
-│   │   ├── castai/
-│   │   │   └── cost_enricher.py
-│   │   ├── datadog/
-│   │   │   ├── client.py
-│   │   │   ├── factory.py
-│   │   │   ├── repository.py
-│   │   │   └── managers/
-│   │   │       ├── base.py
-│   │   │       ├── castai_metrics.py
-│   │   │       ├── metrics.py
-│   │   │       └── slo.py
-│   │   ├── github/
-│   │   │   ├── client.py
-│   │   │   └── repository.py
-│   │   ├── kubernetes/
-│   │   │   ├── appscorecard_writer.py
-│   │   │   ├── castai_health.py
-│   │   │   ├── client.py
-│   │   │   ├── k8s_status_writer.py
-│   │   │   ├── remediation_writer.py
-│   │   │   └── state_store.py
-│   │   └── slack/
-│   │       ├── message_builder.py
-│   │       └── repository.py
-│   ├── utils/
-│   │   ├── json_logger.py
-│   │   └── logging_bootstrap.py
-│   ├── __init__.py
-│   ├── main.py                       # Entry point Kopf
-│   └── settings.py                   # Pydantic settings
-├── tests/
-│   ├── integration/
-│   │   ├── test_mocked_datadog.py
-│   │   └── test_mocked_slack.py
-│   ├── unit/
-│   │   ├── test_castai_monitor.py
-│   │   ├── test_controllers.py
-│   │   ├── test_datadog.py
-│   │   ├── test_domain_models.py
-│   │   ├── test_github_repository.py
-│   │   ├── test_logging.py
-│   │   ├── test_remediation_service.py
-│   │   ├── test_services.py
-│   │   ├── test_settings.py
-│   │   └── test_slack.py
-│   ├── conftest.py
-│   ├── mock_kopf.py
-│   └── __init__.py
-├── Dockerfile
-├── Makefile
-├── README.md
-├── pyproject.toml
-├── pytest.ini
-└── poetry.lock
+
+**Docker:**
+```bash
+docker build -t kailima/titlis-operator:latest .
+docker push kailima/titlis-operator:latest
+```
+
+**Helm:**
+```bash
+helm install titlis-operator ./charts/titlis-operator \
+  --namespace titlis-system \
+  --values values-custom.yaml
+
+helm upgrade titlis-operator ./charts/titlis-operator \
+  --namespace titlis-system \
+  --values values-custom.yaml
 ```
 
 ---
 
-## 5. Serviços, Jobs e Models
+## 12. Adicionando uma Nova Regra de Scorecard
 
-### Domain Models (`src/domain/`)
+1. **Defina a regra** em `config/scorecard-config.yaml`:
+```yaml
+rules:
+  - id: RES-010
+    pillar: resilience
+    severity: error      # critical | error | warning | info
+    weight: 1.0
+    is_remediable: true
+    remediation_category: resources
+    description: "..."
+```
 
-#### `models.py`
+2. **Implemente o validador** em `src/application/services/scorecard_service.py`:
+```python
+def _validate_res_010(self, deployment: dict) -> Finding:
+    containers = deployment.get("spec", {}).get("template", {}).get("spec", {}).get("containers", [])
+    # ... lógica de validação ...
+    return Finding(
+        rule_id="RES-010",
+        pillar="resilience",
+        severity="error",
+        passed=passed,
+        message="...",
+        actual=actual_value,
+        expected="...",
+    )
+```
 
-| Classe | Descrição |
+3. **Adicione ao dispatch** do `evaluate_resource()`.
+
+4. **Escreva testes** em `tests/unit/test_scorecard_service.py`.
+
+---
+
+## 13. Adicionando uma Nova Integração (Port + Adapter)
+
+1. Crie a interface em `src/application/ports/nova_port.py`:
+```python
+from abc import ABC, abstractmethod
+
+class NovaPort(ABC):
+    @abstractmethod
+    async def operacao(self, param: str) -> Result:
+        ...
+```
+
+2. Crie o adapter em `src/infrastructure/nova/repository.py` implementando `NovaPort`.
+
+3. Registre no DI em `src/bootstrap/dependencies.py`:
+```python
+@lru_cache()
+def get_nova_repository() -> Optional[NovaPort]:
+    if not settings.nova_enabled:
+        return None
+    return NovaRepository(client=NovaClient(...))
+```
+
+4. Injete no service via `__init__`.
+
+---
+
+## 14. RBAC (ClusterRole)
+
+O operator precisa das seguintes permissões no cluster:
+
+| Recursos | Verbos |
 |---|---|
-| `ComplianceStatus` | Enum: COMPLIANT, NON_COMPLIANT, UNKNOWN, PENDING |
-| `ServiceTier` | Enum: TIER_1..TIER_4 |
-| `SLOTimeframe` | Enum: 7d, 30d, 90d |
-| `SLOType` | Enum: METRIC, MONITOR, TIME_SLICE |
-| `SLOAppFramework` | Enum: WSGI, FASTAPI, AIOHTTP |
-| `ValidationPillar` | Enum: RESILIENCE, SECURITY, COST, PERFORMANCE, OPERATIONAL, COMPLIANCE |
-| `ValidationRuleType` | Enum: BOOLEAN, NUMERIC, ENUM, REGEX |
-| `ValidationSeverity` | Enum: CRITICAL, ERROR, WARNING, INFO, OPTIONAL |
-| `ValidationRule` | Config de uma regra (id, pillar, severity, weight, remediation) |
-| `ValidationResult` | Resultado de uma validação (passed, message, actual_value) |
-| `PillarScore` | Score de um pilar (0-100, passed_checks, weighted_score) |
-| `ResourceScorecard` | Scorecard completo de um workload |
-| `ScorecardConfig` | Configuração do sistema de scorecard (regras, thresholds) |
-| `SLO` | Definição de SLO |
-| `ServiceDefinition` | Definição de serviço no Datadog |
-| `SLOConfigSpec` | Spec do CRD SLOConfig — inclui `auto_detect_framework: bool` (detecta framework via Datadog tag ou annotation K8s) |
-| `SLOConfigStatus` | Status do CRD SLOConfig — inclui `detected_framework: str` (framework detectado automaticamente) |
+| deployments, deployments/status (apps) | get, list, watch, create, update, patch, delete |
+| pods, services, configmaps, events (core) | get, list, watch, create, update, patch, delete |
+| namespaces | get, list, watch |
+| horizontalpodautoscalers (autoscaling) | get, list, watch, create, update, patch, delete |
+| appscorecards, appremediations, sloconfigs (titlis.io) | get, list, watch, create, update, patch, delete |
+| leases (coordination.k8s.io) | get, list, watch, create, update, patch, delete (leader election) |
+| secrets | get, list, watch (read-only) |
 
-#### `github_models.py`
+Definido em `charts/titlis-operator/templates/rbac.yaml`.
 
-| Classe | Descrição |
-|---|---|
-| `DatadogProfilingMetrics` | CPU/mem médios do Datadog; métodos `suggest_*()` |
-| `RemediationIssue` | Uma issue remediável (rule_id, category: resources/hpa) |
-| `RemediationFile` | Arquivo a commitar no PR (path, content) |
-| `PullRequestResult` | PR criado (number, title, url, branch) |
-| `RemediationRequest` | Request de remediação (resource, issues, body) |
-| `RemediationResult` | Resultado da tentativa (success, pull_request, error) |
+---
 
-#### `slack_models.py`
+## 15. Monitor Sintético — Engine Config-Driven
 
-| Classe | Descrição |
-|---|---|
-| `NotificationSeverity` | Enum: INFO, WARNING, ERROR, CRITICAL |
-| `SlackNotification` | Mensagem Slack (title, message, severity, channel) |
+O monitor sintético é um engine de checks declarativos que cria **uma task asyncio por check**,
+cada uma com seu próprio intervalo.
 
-### Application Services (`src/application/services/`)
+### Tipos de check
 
-| Serviço | Responsabilidade |
-|---|---|
-| `ScorecardService` | Avalia 26+ regras nos workloads, calcula pillar scores |
-| `ScorecardEnricher` | Enriquece scorecard com dados de Backstage e CAST AI |
-| `RemediationService` | Orquestra auto-remediação: Datadog → YAML → GitHub PR → Slack |
-| `SLOService` | Reconcilia SLOConfig CRDs com Datadog (create/update/noop); auto-detecta framework via annotation K8s → Datadog tag → fallback WSGI; idempotência em 3 caminhos (fast-path por `known_slo_id`, orphan check por tag, fluxo original) |
-| `SLOMetricsService` | Coleta métricas de SLO do Datadog |
-| `SlackService` | Dispara notificações Slack com rate limiting |
-| `NamespaceNotificationBuffer` | Agrega scorecards por namespace e envia digest em lote |
-
-### Controllers Kopf (`src/controllers/`)
-
-| Controller | Triggers K8s | Responsabilidade |
+| type | O que faz | Métricas enviadas |
 |---|---|---|
-| `ScorecardController` | resume/create/update/delete em `apps/v1/deployments` | Avalia scorecard, triggera remediação, escreve CRDs |
-| `SLOController` | create/update/delete em SLOConfig CRD | Sincroniza SLOs com Datadog; extrai `known_slo_id` de `status.slo_id` e `k8s_annotations` de `metadata.annotations` para passar ao `SLOService`; persiste `detected_framework` no status |
-| `CastaiMonitorController` | Loop periódico | Monitora saúde do agente CAST AI |
-| `BaseController` | — | Helpers: status update, Slack seguro, namespace exclusion |
+| `site_health` | GET → verifica status HTTP | `synthetic.site.health` (0/1) + `synthetic.site.response_time_ms` |
+| `json_value` | GET → extrai valor por dot-path no JSON → gauge | métrica definida em `metric_name` |
 
-### Ports (Interfaces) (`src/application/ports/`)
+### Configuração via YAML (recomendada)
 
-| Port | Métodos principais |
-|---|---|
-| `GitHubPort` | `branch_exists`, `create_branch`, `get_file_content`, `commit_files`, `create_pull_request`, `find_open_remediation_pr` |
-| `DatadogPort` | `get_service_definition`, `get_service_slos`, `create_slo`, `update_slo_apps`, `get_container_metrics`, `find_slo_by_tags` |
-| `SlackPort` | `send_notification`, `test_connection`, `is_enabled` |
-
-### Infrastructure Adapters (`src/infrastructure/`)
-
-| Adapter | Porta implementada |
-|---|---|
-| `GitHubRepository` | `GitHubPort` — HTTP async com httpx |
-| `DatadogRepository` | `DatadogPort` — datadog-api-client oficial |
-| `SlackRepository` | `SlackPort` — slack-sdk AsyncWebClient/AsyncWebhookClient |
-| `AppScorecardWriter` | — Escreve AppScorecard CRD via kubernetes client |
-| `RemediationWriter` | — Escreve AppRemediation CRD via kubernetes client |
-| `KubernetesStatusWriter` | — Atualiza `.status` de CRDs |
-| `BackstageEnricher` | — HTTP GET para Backstage catalog API |
-| `CastaiCostEnricher` | — HTTP GET para CAST AI cost API |
-
-### CRDs Customizados
-
-| CRD | Grupo/Versão | Propósito |
-|---|---|---|
-| `AppScorecard` | `titlis.io/v1` | Resultado de avaliação de maturidade |
-| `AppRemediation` | `titlis.io/v1` | Registro de PR de remediação criado |
-| `SLOConfig` | `titlis.io/v1` | Definição declarativa de SLO |
-
-### Regras de Validação (26+)
-
-| ID | Pilar | Remediável | Descrição |
-|---|---|---|---|
-| RES-001 | RESILIENCE | Não | Liveness Probe configurada |
-| RES-002 | RESILIENCE | Não | Readiness Probe configurada |
-| RES-003 | RESILIENCE | **Sim** | CPU Requests definido |
-| RES-004 | RESILIENCE | **Sim** | CPU Limits definido |
-| RES-005 | RESILIENCE | **Sim** | Memory Requests definido |
-| RES-006 | RESILIENCE | **Sim** | Memory Limits definido |
-| RES-007 | RESILIENCE | **Sim** | HPA configurado (alta carga) |
-| RES-008 | RESILIENCE | **Sim** | HPA utilization targets adequados |
-| PERF-001 | PERFORMANCE | **Sim** | Resource requests definidos |
-| PERF-002 | PERFORMANCE | **Sim** | HPA targets otimizados |
-
-**Regras remediáveis por categoria:**
-- **resources**: RES-003, RES-004, RES-005, RES-006, PERF-001
-- **hpa**: RES-007, RES-008, PERF-002
-
----
-
-## 6. Doze Common Hurdles (com Soluções)
-
-### H-01: Remediação não inicia — falta DD_GIT_REPOSITORY_URL
-
-**Sintoma:** `create_remediation_pr` retorna `RemediationResult(success=False, error="DD_GIT_REPOSITORY_URL not found")`
-
-**Causa:** O Deployment não tem a variável de ambiente `DD_GIT_REPOSITORY_URL` no container spec.
-
-**Solução:** Adicionar ao Deployment:
 ```yaml
-env:
-  - name: DD_GIT_REPOSITORY_URL
-    value: https://github.com/org/repo
-```
-A URL deve apontar para o repositório GitHub que contém `manifests/kubernetes/main/deploy.yaml`.
+# config/synthetic-checks.yaml ou caminho via SYNTHETIC_CHECKS_CONFIG_PATH
+checks:
+  - name: minha-api
+    type: site_health
+    url: https://api.empresa.com/health
+    interval_seconds: 60
+    tags:
+      env: prod
+      service: minha-api
 
----
-
-### H-02: PR duplicado criado para o mesmo workload
-
-**Sintoma:** Múltiplos PRs abertos com `fix/auto-remediation-{namespace}-{resource}-`.
-
-**Causa:** `_pending` set foi limpo (restart do operador) e `find_open_remediation_pr` não encontrou o PR existente porque o título mudou.
-
-**Solução:** O operador verifica PRs abertos via `find_open_remediation_pr` que busca pelo padrão do branch. Ao reiniciar, verificar se há PRs abertos antes de re-triggerar. O CRD `AppRemediation` pode ser consultado para saber se já existe PR em andamento.
-
----
-
-### H-03: Valores de CPU/memória sendo reduzidos incorretamente
-
-**Sintoma:** O PR sugere redução de `requests.cpu` de `500m` para `100m`.
-
-**Causa:** `_keep_max` não está sendo chamado ou parser não reconhece o formato.
-
-**Solução:** Verificar em `remediation_service.py`:
-- `_parse_cpu_millicores` suporta: `"500m"`, `"0.5"`, `"1"` (sem sufixo = cores inteiros)
-- `_parse_memory_mib` suporta: `"512Mi"`, `"0.5Gi"`, `"512M"`, `"512"` (bytes)
-- `_keep_max(current, suggested, parser)` sempre retorna o maior valor
-
----
-
-### H-04: Slack não recebe notificações
-
-**Sintoma:** Operator roda mas sem mensagens no Slack.
-
-**Causa:** Múltiplas possíveis: `SLACK_ENABLED=false`, severity filtrada, rate limit atingido, token inválido.
-
-**Debug:** Verificar em ordem:
-1. `SLACK_ENABLED=true` no env
-2. `SLACK_ENABLED_SEVERITIES` inclui a severity desejada
-3. Rate limit: `SLACK_RATE_LIMIT_PER_MINUTE` (default 60)
-4. Testar conexão: `SlackRepository.test_connection()`
-5. Logs: buscar `"slack"` no output JSON
-
----
-
-### H-05: Scorecard avalia namespace excluído
-
-**Sintoma:** `kube-system` ou outros namespaces de sistema sendo avaliados.
-
-**Causa:** `excluded_namespaces` em `ScorecardConfig` não está configurado.
-
-**Solução:** Em `config/scorecard-config.yaml`:
-```yaml
-excluded_namespaces:
-  - kube-system
-  - kube-public
-  - kube-node-lease
-  - cert-manager
-  - monitoring
+  - name: saldo-carteira
+    type: json_value
+    url: https://api.carteira.internal/v1/balance
+    json_path: balance          # {"balance": 1200.00}
+    metric_name: carteira.saldo
+    interval_seconds: 120
+    tags:
+      env: prod
+      service: carteira
 ```
 
----
+### Fallback legado
 
-### H-06: SLO criado no Datadog com dados errados
+Se `SYNTHETIC_CHECKS_CONFIG_PATH` não estiver definida, o controller constrói um único check
+`site_health` a partir de `SYNTHETIC_MONITOR_URL` / `SYNTHETIC_MONITOR_NAME` / etc. (backward compat).
 
-**Sintoma:** SLO criado com target diferente do especificado no CRD.
+### Adicionando um novo tipo de check
 
-**Causa:** Validação do `SLOController` permite `warning > target` invertido, ou `target` fora de 0-100.
+1. Crie `XxxCheckConfig(BaseModel)` com `type: Literal["xxx"]` em `check_config.py`
+2. Adicione ao discriminated union `CheckConfig` em `check_config.py`
+3. Crie `XxxChecker` em `src/infrastructure/synthetic/`
+4. Adicione `_run_xxx_check()` e o branch `isinstance(check, XxxCheckConfig)` no controller
+5. Escreva testes em `tests/unit/test_json_value_checker.py` (ou novo arquivo)
 
-**Solução:** Conferir validação em `slo_controller.py`:
-- `warning` deve ser **menor** que `target` (ex: target=99.9, warning=99.0)
-- Ambos entre 0 e 100
-- Para tipo METRIC: obrigatório `app_framework`, (`numerator` + `denominator`), **ou** `auto_detect_framework: true`
+### Dot-path JSON extraction (`json_value`)
 
----
-
-### H-13: Framework detectado incorretamente (fallback WSGI inesperado)
-
-**Sintoma:** SLO criado com queries WSGI, mas o serviço usa FastAPI/aiohttp. `status.detected_framework` mostra `"wsgi"` com `detection_source: fallback`.
-
-**Causa:** Nenhuma das fontes de detecção encontrou o framework: (1) sem annotation `titlis.io/app-framework` no recurso SLOConfig, e (2) a Datadog Service Definition do serviço não tem tag `framework:<value>`.
-
-**Solução:** Escolha uma das três abordagens:
-```yaml
-# Opção 1 — annotation no SLOConfig (maior precedência)
-metadata:
-  annotations:
-    titlis.io/app-framework: fastapi
-
-# Opção 2 — tag na Datadog Service Definition do serviço
-tags:
-  - framework:fastapi
-
-# Opção 3 — campo explícito no spec (ignora auto-detecção)
-spec:
-  app_framework: fastapi
-  auto_detect_framework: false
-```
-Verificar no log: campo `detection_source` indica `"annotation"`, `"datadog_tag"` ou `"fallback"`.
-
----
-
-### H-07: HPA criado com minReplicas maior que maxReplicas
-
-**Sintoma:** K8s rejeita o HPA criado pelo PR com erro de validação.
-
-**Causa:** `_build_hpa_manifest_dict` usa `max(current, settings.hpa_min_replicas)` mas `max_replicas` não foi ajustado proporcionalmente.
-
-**Solução:** Verificar que `REMEDIATION_HPA_MAX_REPLICAS > REMEDIATION_HPA_MIN_REPLICAS` no env. O operador usa os defaults do settings se não há HPA atual.
-
----
-
-### H-08: Datadog não retorna métricas — defaults usados sempre
-
-**Sintoma:** PR sempre usa valores default (100m CPU, 128Mi mem) mesmo para apps com alto consumo.
-
-**Causa:** `get_container_metrics` retorna `None` porque `DD_API_KEY`/`DD_APP_KEY` inválidas ou deployment_name não bate com o nome no Datadog.
-
-**Solução:**
-1. Verificar credenciais Datadog nas secrets
-2. Confirmar que o Deployment tem tag `service` no Datadog matching o nome K8s
-3. Testar diretamente: `DatadogRepository.get_container_metrics(name, namespace)`
-
----
-
-### H-09: `@lru_cache` retorna instância antiga após mudança de settings
-
-**Sintoma:** Mudança em ENV var não reflete na instância do serviço.
-
-**Causa:** `@lru_cache` em `dependencies.py` cria singleton na primeira chamada e não invalida.
-
-**Solução:** Reiniciar o pod do operador. Em testes, usar `functools.lru_cache.cache_clear()` nos fixtures ou mockar os getters diretamente.
-
----
-
-### H-10: Kopf para de processar eventos sem logs de erro
-
-**Sintoma:** Deployments são criados/atualizados mas o controller não reage.
-
-**Causa:** Handler lançou exceção não tratada causando crash silencioso do worker, ou leader election perdida.
-
-**Solução:**
-1. Verificar logs do pod: `kubectl logs -n titlis-system <pod>`
-2. Checar se `ENABLE_LEADER_ELECTION=true` e se outro pod assumiu a liderança
-3. Confirmar que o ServiceAccount tem RBAC adequado (`charts/titlis-operator/templates/rbac.yaml`)
-
----
-
-### H-11: ruamel.yaml não preserva comentários no deploy.yaml
-
-**Sintoma:** PR remove comentários existentes do arquivo YAML.
-
-**Causa:** `_modify_deploy_yaml` usa `ruamel.yaml` com `RoundTripLoader` que deve preservar comentários, mas a serialização pode perdê-los em edge cases.
-
-**Solução:** Confirmar que o load usa `yaml = YAML()` (não `YAML(typ='safe')`). Evitar misturar `ruamel.yaml` com `PyYAML` no mesmo arquivo.
-
----
-
-### H-12: Testes falham com `ModuleNotFoundError: kopf`
-
-**Sintoma:** `pytest` falha na importação de controllers que importam kopf.
-
-**Causa:** Kopf usa decoradores que registram handlers globalmente; em testes, o módulo precisa ser mockado.
-
-**Solução:** O projeto tem `tests/mock_kopf.py` com mocks dos decoradores Kopf. Usar o `conftest.py` que injeta esses mocks antes de importar os controllers. Nunca importar controllers diretamente sem o mock ativo.
-
----
-
-## 7. Quinze Design Patterns do Projeto
-
-### P-01: Hexagonal Architecture (Ports & Adapters)
-Domínio isolado de infraestrutura via interfaces abstratas em `src/application/ports/`. Serviços dependem de ports, nunca de adapters diretamente. Facilita testes (mock ports) e troca de providers.
-
-### P-02: Dependency Injection via lru_cache
-`src/bootstrap/dependencies.py` usa `@lru_cache()` para criar singletons lazy. Cada `get_*()` function encapsula inicialização e retorna a mesma instância. Feature flags controlam o que é inicializado.
-
-### P-03: Feature Flags por ENV
-Cada funcionalidade major (`ENABLE_SCORECARD_CONTROLLER`, `ENABLE_AUTO_REMEDIATION`, etc.) pode ser desligada sem rebuild. Controllers registrados condicionalmente em `src/main.py`.
-
-### P-04: Never-Reduce (Immutable Floor)
-`_keep_max(current, suggested, parser)` garante que auto-remediação nunca reduza CPU/memória de containers. Princípio: o operador só melhora, nunca degrada o que já existe.
-
-### P-05: HPA Utilization Minimization
-Para targets de HPA (CPU%, mem%), usa `min(current, default)` em vez de `max`. Lógica inversa deliberada: target menor = escala mais cedo = mais agressivo = melhor para resiliência.
-
-### P-06: Idempotency via Memory + API Check
-`RemediationService` mantém `_pending: Set[str]` em memória para bloquear runs concorrentes no mesmo recurso. Antes de criar PR, verifica via GitHub API se já há PR aberto. Dupla proteção.
-
-### P-07: Batch Notifications (Namespace Digest)
-`NamespaceNotificationBuffer` coleta scorecards de todos os workloads de um namespace e envia um único digest Slack em vez de uma mensagem por Deployment. Reduz ruído em clusters com muitos apps.
-
-### P-08: Graceful Degradation
-Serviços opcionais (Slack, Backstage, CAST AI) inicializam como `None` se desabilitados. Controllers verificam `if service is None` antes de usar. Operador funciona mesmo sem integrações externas.
-
-### P-09: Kopf Handler Delegation
-Handlers Kopf são thin — apenas capturam kwargs e delegam para métodos de Controller classes. Ex: `@kopf.on.create` chama `ScorecardController().on_resource_event(body, **kwargs)`. Desacopla framework do negócio.
-
-### P-10: Structured JSON Logging
-Todos os logs são JSON via `python-json-logger` + `structlog`. Campos padronizados: `event`, `namespace`, `resource`, `pillar`, `score`, `rule_id`. Facilita ingestão em Datadog/Elasticsearch.
-
-### P-11: Pydantic Settings com Nested Models
-`Settings` em `src/settings.py` usa composição de sub-models Pydantic (`SlackSettings`, `GitHubSettings`, `RemediationSettings`). Validação de tipos em startup. Defaults sensatos via `Field(default=...)`.
-
-### P-12: Repository Pattern
-Cada adapter externo implementa um Repository que traduz chamadas de domínio para API específica. `GitHubRepository`, `DatadogRepository`, `SlackRepository` são a única camada que conhece detalhes de HTTP/SDK.
-
-### P-13: YAML Round-Trip Preservation
-Usa `ruamel.yaml` (não PyYAML) para ler, modificar e reescrever `deploy.yaml` sem destruir formatação, comentários e ordem de chaves. Crítico para PRs aceitáveis pelos desenvolvedores.
-
-### P-14: CRD as State Store
-`AppScorecard` e `AppRemediation` CRDs servem como estado persistente do operador. Permitem que outros sistemas consultem o estado atual sem acesso interno ao operador. Status subresource atualizado após cada evento.
-
-### P-15: Three-Path SLO Idempotency
-`SLOService.reconcile_slo` usa três caminhos de execução para garantir idempotência completa:
-- **Path A** (`known_slo_id` presente) — fast path no restart: usa `status.slo_id` diretamente, salta toda busca, chama `update_slo_apps` direto.
-- **Path B** (`known_slo_id` ausente, `resource_uid` presente) — orphan safety check: busca via `find_slo_by_tags(["titlis_resource_uid:<uid>"])` antes de criar, evita SLOs duplicados após crash/restore.
-- **Path C** — fluxo original: `get_service_slos` → `check_and_update_existing_slo` → create. Todo SLO criado recebe tag `titlis_resource_uid:<k8s-uid>` para permitir Path B em reconciliações futuras.
-
----
-
-## 8. Pipeline Semanal Completo
-
-> Sugestão de pipeline de manutenção e qualidade para equipes operando o Titlis Operator.
-
-### Segunda-feira — 09:00: Revisão de Scorecard
-
-```
-09:00 - Revisar AppScorecards com overall_score < 70
-09:30 - Verificar AppRemediations com phase=Failed
-10:00 - Triage: quais PRs de remediação precisam de merge manual
-```
-
-### Terça-feira — 10:00: SLO Health Check
-
-```
-10:00 - Verificar SLOConfigs com state=error no status
-10:15 - Checar SLOConfigs com detected_framework=wsgi e detection_source=fallback (possível framework errado)
-10:30 - Checar compliance dos SLOs no Datadog (target vs actual)
-11:00 - Atualizar thresholds se necessário
-```
-
-### Quarta-feira — 14:00: Security Scan
-
-```
-14:00 - make lint (black, flake8, mypy, pylint)
-14:30 - poetry run bandit -r src/
-15:00 - poetry run safety check
-15:30 - Revisar alertas de dependências desatualizadas
-```
-
-### Quinta-feira — 09:00: Testes e Cobertura
-
-```
-09:00 - make test-coverage (meta: >= 70%)
-09:30 - Revisar falhas de teste
-10:00 - Adicionar testes para novas features da semana
-11:00 - make test-unit para validação final
-```
-
-### Sexta-feira — 15:00: Release e Documentação
-
-```
-15:00 - Revisar PRs pendentes de remediação auto-gerados
-15:30 - Tag de versão se houver mudanças significativas
-16:00 - Atualizar CLAUDE.md se novos padrões foram identificados
-16:30 - Retrospectiva rápida de issues da semana
-```
-
-### Contínuo (a cada push/PR):
-
-```
-CI: make lint && make test-unit
-CD: build Docker image + push para registry
-Deploy: helm upgrade --install titlis-operator charts/titlis-operator/
-```
-
----
-
-## 9. Checklist Pós-Implementação
-
-Execute **todos os itens** após qualquer alteração no código:
-
-### Qualidade de Código
-
-- [ ] `make lint` passa sem erros (`black`, `flake8`, `mypy`, `pylint`)
-- [ ] `make format` rodado se black reportou diffs
-- [ ] Sem `type: ignore` sem justificativa em comentário
-- [ ] Sem `# noqa` sem justificativa em comentário
-
-### Testes
-
-- [ ] `make test-unit` — todos os testes passam
-- [ ] `make test-coverage` — cobertura >= 70%
-- [ ] Novos testes escritos para todo código novo
-- [ ] Mocks usam `AsyncMock` para métodos async
-- [ ] Fixtures em `conftest.py` quando reutilizáveis
+`json_path: "data.account.balance"` resolve `{"data": {"account": {"balance": 42.5}}}` → `42.5`.
+Qualquer path ausente, não-dict intermediário ou valor não numérico retorna `success=False` e
+**não envia a métrica** (log `WARNING`).
 
 ### Segurança
 
-- [ ] Nenhuma credencial hardcoded (usar ENV vars via `settings.py`)
-- [ ] Inputs externos validados pelo Pydantic
-- [ ] `DD_GIT_REPOSITORY_URL` validado antes de usar
-- [ ] RBAC mínimo necessário em `charts/titlis-operator/templates/rbac.yaml`
-
-### Arquitetura
-
-- [ ] Novos serviços externos adicionados como Port + Adapter (hexagonal)
-- [ ] Novas dependências inicializadas em `src/bootstrap/dependencies.py`
-- [ ] Feature flag adicionada para novas funcionalidades major
-- [ ] Logs JSON estruturados com campos: `event`, `namespace`, `resource`
-
-### Remediação (se alterou `remediation_service.py`)
-
-- [ ] `_keep_max` chamado em todos os valores de CPU/memória
-- [ ] HPA usa `min()` para utilization, `max()` para replicas
-- [ ] PR search funciona com `find_open_remediation_pr`
-- [ ] `_pending` set limpo após conclusão (sucesso ou erro)
-- [ ] Testes em `test_remediation_service.py` atualizados
-
-### Configuração
-
-- [ ] Novas ENV vars documentadas neste CLAUDE.md (seção 3)
-- [ ] Valores default razoáveis em `settings.py` via `Field(default=...)`
-- [ ] `charts/titlis-operator/templates/configmap.yaml` ou `values.yaml` atualizados se necessário
-
-### CRDs (se alterou schemas)
-
-- [ ] `charts/titlis-operator/crds/*.yaml` atualizados
-- [ ] Versão de API incrementada se houver breaking changes
-- [ ] `to_dict()` atualizado se campos foram adicionados ao modelo
-
-### Deploy
-
-- [ ] Dockerfile não precisa de rebuild se apenas mudanças de config
-- [ ] `pyproject.toml` atualizado se novas dependências adicionadas
-- [ ] `poetry.lock` committed junto com `pyproject.toml`
+- Nunca coloque tokens em `headers` no YAML — injete via `envFrom` + Secret K8s
+- Sanitização: apenas o valor numérico extraído é enviado ao Datadog; o corpo completo da resposta
+  nunca é logado para evitar vazar dados sensíveis
 
 ---
 
-## 10. Comandos de Desenvolvimento Rápido
+## 16. O Que Não Fazer
 
-```bash
-# Setup inicial
-poetry install
-
-# Desenvolvimento
-make test-unit          # Testes unitários
-make test-coverage      # Testes + coverage report
-make lint               # Todos os linters
-make format             # Auto-format com black
-
-# Testes específicos
-make test-settings      # test_settings.py
-make test-datadog       # test_datadog.py
-make test-slack         # test_slack.py
-make test-services      # test_services.py
-make test-controllers   # test_controllers.py
-
-# Pattern matching
-PATTERN=remediation make test-pattern
-
-# Rodar localmente (requer kubeconfig)
-make run
-
-# Full cycle
-make dev               # clean + dev-install + test + lint
-```
-
----
-
-## 11. Regras Obrigatórias para Claude
-
-1. **Sempre** rodar `make lint && make test-unit` após qualquer mudança
-2. **Nunca** reduzir valores de CPU/memória — usar `_keep_max()`
-3. **Nunca** criar adaptadores que não implementem a Port correspondente
-4. **Nunca** hardcodar credenciais — sempre via `settings.py` / ENV
-5. **Sempre** usar `AsyncMock` para métodos async em testes
-6. **Sempre** adicionar logging JSON estruturado em código novo
-7. **Sempre** verificar feature flag antes de inicializar dependências opcionais
-8. **Nunca** importar infrastructure diretamente de domain ou controllers — sempre via ports
-9. Novos serviços externos = Port interface + Adapter + DI em `dependencies.py`
-10. Novas ENV vars = documentar na seção 3 deste arquivo e em `settings.py` com `Field()`
-11. **Nunca** adicionar docstrings — nem de módulo, classe ou função. Lint padrão é **flake8** (regras D100–D107 ignoradas)
-
----
-
-## 12. Documentação de Referência
-
-| Documento | Propósito |
-|-----------|-----------|
-| [docs/modelagem-dados.md](docs/modelagem-dados.md) | DDL completo (estado atual) + schema evolution fases 1–7 |
-| [docs/rules-and-evolution.md](docs/rules-and-evolution.md) | Regras de código consolidadas + roadmap por fase |
-| [docs/evolution-checklist.md](docs/evolution-checklist.md) | Checklist de progresso do roadmap |
-| [docs/guia-extensao-scorecard.md](docs/guia-extensao-scorecard.md) | Guia para adicionar novas regras de validação |
-| [docs/scorecard-rules.md](docs/scorecard-rules.md) | Todas as 23 regras de validação com detalhamento completo |
-| [docs/guia-titlis-api-kotlin.md](docs/guia-titlis-api-kotlin.md) | Passo a passo para criar a Titlis API (Kotlin/Ktor) e integrar ao operador |
-
----
-
-## 13. Banco de Dados Relacional
-
-### Status atual
-
-> **Schema criado, não integrado.** O operador persiste estado exclusivamente via CRDs Kubernetes.
-> O banco de dados é uma camada de observabilidade futura — não é pré-requisito para operação.
-
-### Script de criação
-
-```bash
-# Criar o banco (uma única vez em cada ambiente):
-psql -U postgres -c "CREATE DATABASE titlis;"
-psql -U postgres -d titlis -f db/schema.sql
-```
-
-### Estrutura de schemas
-
-| Schema | SLA | Propósito |
-|--------|-----|-----------|
-| `titlis_oltp` | < 5ms | Estado atual de workloads, scorecards, remediações e SLOs |
-| `titlis_audit` | 100% completude | Histórico SCD Type 4 + audit trail de notificações |
-| `titlis_ts` | volume | Métricas CPU/mem e scores time-series (candidato a TimescaleDB) |
-
-### Tabelas principais
-
-| Tabela | Schema | Descrição |
-|--------|--------|-----------|
-| `clusters` | `titlis_oltp` | Clusters Kubernetes registrados |
-| `namespaces` | `titlis_oltp` | Namespaces por cluster |
-| `workloads` | `titlis_oltp` | Deployments rastreados (soft-delete) |
-| `validation_rules` | `titlis_oltp` | Catálogo imutável das 26+ regras |
-| `app_scorecards` | `titlis_oltp` | Estado atual do scorecard (1 por workload — SCD Type 4) |
-| `pillar_scores` | `titlis_oltp` | Score por pilar do scorecard atual |
-| `validation_results` | `titlis_oltp` | Resultado por regra do scorecard atual |
-| `app_remediations` | `titlis_oltp` | Estado atual da remediação (1 por workload — SCD Type 4) |
-| `remediation_issues` | `titlis_oltp` | Issues individuais vinculadas à remediação |
-| `slo_configs` | `titlis_oltp` | Estado atual dos SLOConfig CRDs |
-| `app_scorecard_history` | `titlis_audit` | Histórico de scorecards com snapshot JSONB |
-| `pillar_score_history` | `titlis_audit` | Histórico granular por pilar |
-| `remediation_history` | `titlis_audit` | Log de todas as transições de estado de remediação |
-| `slo_compliance_history` | `titlis_audit` | Histórico de sincronizações com o Datadog |
-| `notification_log` | `titlis_audit` | Auditoria de notificações Slack |
-| `resource_metrics` | `titlis_ts` | CPU/memória coletados do Datadog |
-| `scorecard_scores` | `titlis_ts` | Série temporal plana para Grafana/Metabase |
-
-### Padrões de design do banco
-
-- **PKs como BIGINT IDENTITY**: PKs no formato `<nome_da_tabela>_id BIGINT GENERATED ALWAYS AS IDENTITY` — evita fragmentação de UUID randômico e mantém ordem de inserção.
-- **Nomes compostos**: colunas `name`, `type`, `status` standalone são proibidas; usar sempre prefixo composto (`cluster_name`, `app_remediation_status`, etc.).
-- **VARCHAR sobre TEXT**: preferir `VARCHAR(n)` quando o tamanho máximo é conhecido; `TEXT` apenas quando indefinido (ex: mensagens de erro).
-- **SCD Type 4**: tabela corrente (`app_scorecards`) + tabela histórica separada (`app_scorecard_history`). A **aplicação** arquiva o estado anterior quando `version` muda (sem triggers DML).
-- **Never-FK em audit**: tabelas `titlis_audit.*` usam referências lógicas (sem FK constraint) — histórico sobrevive à deleção de workloads.
-- **Snapshot JSONB**: `pillar_scores` e `validation_results` desnormalizados como JSONB no histórico eliminam joins analíticos.
-- **Sem triggers DML**: `updated_at` e audit trail gerenciados pela aplicação — sem functions/triggers que modifiquem dados no banco.
-- **Particionamento futuro**: `titlis_audit.*` e `titlis_ts.*` projetados para `PARTITION BY RANGE` trimestral via `pg_partman`.
-
-### Quando integrar
-
-A integração com o banco deve ocorrer quando houver necessidade de:
-- Dashboard/frontend com histórico de scores
-- Queries analíticas (top regras que mais falham, taxa de sucesso de remediações)
-- Auditoria de notificações Slack com retenção longa
-- Métricas time-series independentes do Datadog
-
+- **Nunca** adicione docstrings — código deve ser autoexplicativo
+- **Nunca** reduza `resources.requests/limits` — use `_keep_max()`
+- **Nunca** omita o `tenant_id` no envelope UDP para o titlis-api
+- **Nunca** deixe o operator bloquear em falhas externas (Slack/GitHub/Datadog) — são fire-and-forget
+- **Nunca** faça `yaml.load()` com PyYAML em manifests — use `ruamel.yaml` para preservar formatação
+- **Nunca** instancie repositórios fora de `bootstrap/dependencies.py` — quebraria o DI
+- **Nunca** processe namespaces do sistema (kube-system, datadog, etc.) — estão na exclusion list
+- **Nunca** crie um segundo PR de remediação sem verificar o existente via GitHub API

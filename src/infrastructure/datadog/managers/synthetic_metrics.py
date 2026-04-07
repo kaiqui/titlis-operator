@@ -35,13 +35,18 @@ class SyntheticSiteMetricsManager:
 
         self.configuration = self._build_configuration()
 
-    def send_check_result(self, result: dict) -> bool:
+    def send_check_result(
+        self,
+        result: dict,
+        extra_tags: Optional[list[str]] = None,
+    ) -> bool:
         checked_at = result.get("checked_at") or int(time.time())
         status_code = result.get("status_code")
         tags = [
             f"monitor_name:{result['monitor_name']}",
             f"target_host:{result['target_host']}",
             f"status_code:{status_code if status_code is not None else 'unknown'}",
+            *(extra_tags or []),
         ]
         series = [
             MetricSeries(

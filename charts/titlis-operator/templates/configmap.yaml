@@ -57,6 +57,12 @@ data:
   GITHUB_BASE_BRANCH: "{{ default "develop" .Values.github.baseBranch }}"
   GITHUB_TIMEOUT_SECONDS: "{{ default 30 .Values.github.timeoutSeconds }}"
 
+  # Titlis API
+  TITLIS_API_ENABLED: "{{ default false .Values.titlisApi.enabled }}"
+  TITLIS_API_HOST: "{{ default "titlis-api.titlis-system.svc.cluster.local" .Values.titlisApi.host }}"
+  TITLIS_API_UDP_PORT: "{{ default 8125 .Values.titlisApi.udpPort }}"
+  TITLIS_API_HTTP_PORT: "{{ default 8080 .Values.titlisApi.httpPort }}"
+
   # Datadog
   DD_SITE: "{{ default "datadoghq.com" .Values.datadog.site }}"
   DD_SECRET_NAME: "{{ default "titlis-datadog-keys" .Values.datadog.secretName }}"

@@ -259,6 +259,34 @@ spec:
                   name: {{ include "titlis.fullname" . }}-config
                   key: GITHUB_TIMEOUT_SECONDS
 
+            # ── Titlis API ──────────────────────────────────────────────────
+            - name: TITLIS_API_ENABLED
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: TITLIS_API_ENABLED
+            - name: TITLIS_API_HOST
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: TITLIS_API_HOST
+            - name: TITLIS_API_UDP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: TITLIS_API_UDP_PORT
+            - name: TITLIS_API_HTTP_PORT
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: TITLIS_API_HTTP_PORT
+            - name: TITLIS_API_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default "titlis-api-keys" .Values.titlisApi.secretName }}
+                  key: TITLIS_API_API_KEY
+                  optional: true
+
             # ── Datadog config ──────────────────────────────────────────────
             - name: DD_SITE
               valueFrom:

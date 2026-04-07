@@ -10,10 +10,17 @@ logger = logging.getLogger(__name__)
 
 
 class TitlisApiUdpClient(TitlisApiPort):
-    def __init__(self, host: str, udp_port: int, http_base_url: str):
+    def __init__(
+        self,
+        host: str,
+        udp_port: int,
+        http_base_url: str,
+        api_key: str,
+    ):
         self._host = host
         self._udp_port = udp_port
         self._http_base_url = http_base_url
+        self._api_key = api_key
         self._transport: Optional[asyncio.DatagramTransport] = None
         self._loop: Optional[asyncio.AbstractEventLoop] = None
 
@@ -32,10 +39,11 @@ class TitlisApiUdpClient(TitlisApiPort):
             )
 
     async def _send_udp(self, event_type: str, data: dict) -> None:
-        envelope = {
+        envelope: dict = {
             "v": 1,
             "t": event_type,
             "ts": int(time.time() * 1000),
+            "api_key": self._api_key,
             "data": data,
         }
         try:
