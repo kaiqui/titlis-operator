@@ -111,25 +111,26 @@ COMMENT ON COLUMN titlis_oltp.tenants.updated_at  IS 'Data da última modificaç
 
 -- ----------------------------------------------------------------
 -- clusters
--- tenant_id nullable: suporta single-tenant hoje, multi-tenant na Fase 1.
+-- tenant_id NOT NULL: cada tenant tem sua própria visão do cluster (cluster_name, tenant_id) UNIQUE.
 -- ----------------------------------------------------------------
 CREATE TABLE titlis_oltp.clusters (
     cluster_id   BIGINT       GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    tenant_id    BIGINT       REFERENCES titlis_oltp.tenants(tenant_id),
-    cluster_name VARCHAR(255) NOT NULL UNIQUE,
+    tenant_id    BIGINT       NOT NULL REFERENCES titlis_oltp.tenants(tenant_id),
+    cluster_name VARCHAR(255) NOT NULL,
     environment  VARCHAR(50)  NOT NULL,
     region       VARCHAR(100),
     provider     VARCHAR(100),
     k8s_version  VARCHAR(50),
     is_active    BOOLEAN      NOT NULL DEFAULT TRUE,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
-    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now()
+    updated_at   TIMESTAMPTZ  NOT NULL DEFAULT now(),
+    UNIQUE (cluster_name, tenant_id)
 );
 
 COMMENT ON TABLE  titlis_oltp.clusters              IS 'Clusters Kubernetes monitorados pelo operador';
 COMMENT ON COLUMN titlis_oltp.clusters.cluster_id   IS 'Chave primária surrogate';
-COMMENT ON COLUMN titlis_oltp.clusters.tenant_id    IS 'Referência ao tenant proprietário; nullable para suporte single-tenant';
-COMMENT ON COLUMN titlis_oltp.clusters.cluster_name IS 'Nome único do cluster Kubernetes';
+COMMENT ON COLUMN titlis_oltp.clusters.tenant_id    IS 'Referência ao tenant proprietário; NOT NULL — cada tenant tem visão isolada do cluster';
+COMMENT ON COLUMN titlis_oltp.clusters.cluster_name IS 'Nome do cluster Kubernetes; único por tenant (cluster_name, tenant_id)';
 COMMENT ON COLUMN titlis_oltp.clusters.environment  IS 'Ambiente do cluster: production, staging, develop';
 COMMENT ON COLUMN titlis_oltp.clusters.region       IS 'Região cloud (us-east-1, brazil-south, etc.)';
 COMMENT ON COLUMN titlis_oltp.clusters.provider     IS 'Provedor de nuvem: aws, gcp, azure, on-prem';

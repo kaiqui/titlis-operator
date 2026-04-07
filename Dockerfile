@@ -8,6 +8,7 @@ RUN pip install poetry && \
     poetry config virtualenvs.create false && \
     poetry install --no-interaction --no-ansi --no-root
 
+COPY config/ ./config/
 COPY src/ ./src/
 
 # 🔑 Torna o módulo src visível para o Python
