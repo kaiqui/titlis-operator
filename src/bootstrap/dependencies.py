@@ -18,13 +18,16 @@ from src.domain.slack_models import (
 )
 from src.application.services.scorecard_service import ScorecardService
 from src.application.services.slo_metrics_service import SLOMetricsService
-from src.utils.json_logger import configure_logging, get_logger
+from src.utils.json_logger import ensure_json_logging, get_logger
 
 logger = get_logger(__name__)
 
 
 def init_logging() -> None:
-    configure_logging(logging.INFO)
+    from src.settings import settings
+
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    ensure_json_logging(level=level)
 
 
 @lru_cache()

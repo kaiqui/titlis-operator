@@ -1,11 +1,9 @@
-from src.utils.json_logger import setup_logger
+import logging
+
+from src.settings import settings
+from src.utils.json_logger import ensure_json_logging
 
 
 def init_logging() -> None:
-    # Root do operador
-    setup_logger("controller", level="INFO")
-    setup_logger("SLOService", level="INFO")
-    setup_logger("DatadogRepository", level="INFO")
-    setup_logger("SLOManager", level="INFO")
-    setup_logger("DeploymentsController", level="INFO")
-    setup_logger("ServiceController", level="INFO")
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    ensure_json_logging(level=level)

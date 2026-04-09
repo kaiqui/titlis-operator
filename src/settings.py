@@ -28,7 +28,7 @@ class TitlisApiSettings(BaseSettings):
 
 
 class SlackSettings(BaseSettings):
-    enabled: bool = Field(default=True, validation_alias="SLACK_ENABLED")
+    enabled: bool = Field(default=False, validation_alias="SLACK_ENABLED")
     webhook_url: Optional[SecretStr] = Field(
         default=None, validation_alias="SLACK_WEBHOOK_URL"
     )
@@ -95,7 +95,7 @@ class SlackSettings(BaseSettings):
 
 
 class GitHubSettings(BaseSettings):
-    enabled: bool = Field(default=True, validation_alias="GITHUB_ENABLED")
+    enabled: bool = Field(default=False, validation_alias="GITHUB_ENABLED")
     token: Optional[SecretStr] = Field(default=None, validation_alias="GITHUB_TOKEN")
     base_branch: str = Field(default="develop", validation_alias="GITHUB_BASE_BRANCH")
     timeout_seconds: float = Field(
@@ -137,7 +137,7 @@ class RemediationSettings(BaseSettings):
 
     # Feature flags para ações de remediação
     enable_remediation_resources: bool = Field(
-        default=True, validation_alias="ENABLE_REMEDIATION_RESOURCES"
+        default=False, validation_alias="ENABLE_REMEDIATION_RESOURCES"
     )
     enable_remediation_hpa: bool = Field(
         default=True, validation_alias="ENABLE_REMEDIATION_HPA"

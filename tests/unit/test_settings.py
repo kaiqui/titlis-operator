@@ -13,7 +13,7 @@ class TestSettings:
 
     def test_slack_settings_defaults(self):
         slack_settings = SlackSettings()
-        assert slack_settings.enabled is True
+        assert slack_settings.enabled is False
         assert slack_settings.default_channel == "#titlis-notifications"
         assert slack_settings.rate_limit_per_minute == 60
         assert slack_settings.timeout_seconds == 10.0

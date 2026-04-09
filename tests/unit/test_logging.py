@@ -3,7 +3,6 @@ import logging
 from unittest.mock import patch, Mock
 from src.utils.json_logger import (
     JsonLogFormatter,
-    configure_logging,
     ensure_json_logging,
     setup_logger,
     get_logger,
@@ -52,22 +51,32 @@ class TestJsonLogger:
 
         assert "stack_trace" in log_record
 
-    @patch("src.utils.json_logger.logging.getLogger")
     @patch("src.utils.json_logger.logging.StreamHandler")
-    def test_ensure_json_logging(self, mock_handler, mock_get_logger):
-        mock_root_logger = Mock()
-        mock_get_logger.return_value = mock_root_logger
+    def test_ensure_json_logging(self, mock_handler):
+        import src.utils.json_logger as jl
 
-        # Mock handler setup
+        original_configured = jl._root_configured
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+
+        jl._root_configured = False  # force handler setup
+
         mock_handler_instance = Mock()
+        mock_handler_instance.level = logging.NOTSET
         mock_handler.return_value = mock_handler_instance
 
-        ensure_json_logging()
+        ensure_json_logging(logging.WARNING)
 
-        # Verify root logger was configured
-        mock_root_logger.setLevel.assert_called_with(logging.INFO)
-        assert mock_root_logger.removeHandler.called
-        assert mock_root_logger.addHandler.called
+        assert root.level == logging.WARNING
+        assert mock_handler_instance.setFormatter.called
+
+        for h in list(root.handlers):
+            root.removeHandler(h)
+        for h in original_handlers:
+            root.addHandler(h)
+        root.setLevel(original_level)
+        jl._root_configured = original_configured
 
     def test_setup_logger(self):
         with patch("src.utils.json_logger.ensure_json_logging") as mock_ensure:
@@ -115,15 +124,17 @@ class TestJsonLogger:
         logger = get_logger("test_module")
         assert isinstance(logger, logging.Logger)
 
-    def test_configure_logging(self):
-        import structlog
+    def test_ensure_json_logging_sets_level(self):
+        import src.utils.json_logger as jl
 
-        with patch("src.utils.json_logger.logging.getLogger") as mock_get_logger:
-            mock_root = Mock()
-            mock_root.handlers = []
-            mock_get_logger.return_value = mock_root
-            configure_logging(logging.DEBUG)
-            mock_root.setLevel.assert_called_once_with(logging.DEBUG)
+        original = jl._root_configured
+        jl._root_configured = True  # skip handler setup, only test level change
+
+        root = logging.getLogger()
+        ensure_json_logging(logging.DEBUG)
+        assert root.level == logging.DEBUG
+
+        jl._root_configured = original
 
     def test_json_formatter_format(self):
         import json
@@ -147,11 +158,8 @@ class TestLoggingBootstrap:
     def test_init_logging(self):
         from src.utils.logging_bootstrap import init_logging
 
-        with patch("src.utils.logging_bootstrap.setup_logger") as mock_setup:
+        with patch("src.utils.logging_bootstrap.ensure_json_logging") as mock_ensure:
             init_logging()
-            assert mock_setup.call_count == 6
-            # Verify specific loggers were set up
-            calls = [call[0][0] for call in mock_setup.call_args_list]
-            assert "controller" in calls
-            assert "SLOService" in calls
-            assert "DatadogRepository" in calls
+            mock_ensure.assert_called_once()
+            _, kwargs = mock_ensure.call_args
+            assert "level" in kwargs
