@@ -49,13 +49,13 @@ class JsonValueChecker:
             **headers,
         }
 
-    async def check(self, json_path: str, metric_name: str) -> JsonValueCheckResult:
+    def check(self, json_path: str, metric_name: str) -> JsonValueCheckResult:
         try:
-            async with httpx.AsyncClient(
+            with httpx.Client(
                 timeout=self.timeout_seconds,
                 follow_redirects=True,
             ) as http:
-                response = await http.get(self.url, headers=self.headers)
+                response = http.get(self.url, headers=self.headers)
 
             if not (200 <= response.status_code < 300):
                 return JsonValueCheckResult(

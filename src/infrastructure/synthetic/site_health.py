@@ -45,15 +45,15 @@ class SyntheticSiteHealthChecker:
         self.timeout_seconds = timeout_seconds
         self.target_host = urlparse(target_url).netloc or target_url
 
-    async def check(self) -> SyntheticCheckResult:
+    def check(self) -> SyntheticCheckResult:
         started_at = time.perf_counter()
 
         try:
-            async with httpx.AsyncClient(
+            with httpx.Client(
                 timeout=self.timeout_seconds,
                 follow_redirects=True,
             ) as http:
-                response = await http.get(
+                response = http.get(
                     self.target_url,
                     headers={"User-Agent": "titlis-operator-synthetic-monitor/1.0"},
                 )

@@ -1,4 +1,5 @@
-import asyncio
+import threading
+import time
 from typing import Any, Union
 
 import kopf
@@ -53,13 +54,13 @@ def _tags_dict_to_list(tags: dict[str, str]) -> list[str]:
     return [f"{k}:{v}" for k, v in tags.items()]
 
 
-async def _run_site_health_check(check: SiteHealthCheckConfig) -> None:
+def _run_site_health_check(check: SiteHealthCheckConfig) -> None:
     checker = SyntheticSiteHealthChecker(
         monitor_name=check.name,
         target_url=check.url,
         timeout_seconds=check.timeout_seconds,
     )
-    result = await checker.check()
+    result = checker.check()
 
     if not settings.datadog_api_key:
         logger.error(
@@ -96,14 +97,14 @@ async def _run_site_health_check(check: SiteHealthCheckConfig) -> None:
     )
 
 
-async def _run_json_value_check(check: JsonValueCheckConfig) -> None:
+def _run_json_value_check(check: JsonValueCheckConfig) -> None:
     checker = JsonValueChecker(
         name=check.name,
         url=check.url,
         timeout_seconds=check.timeout_seconds,
         headers=check.headers,
     )
-    result = await checker.check(
+    result = checker.check(
         json_path=check.json_path,
         metric_name=check.metric_name,
     )
@@ -146,23 +147,20 @@ async def _run_json_value_check(check: JsonValueCheckConfig) -> None:
         )
 
 
-async def _check_loop(check: _AnyCheck) -> None:
-    await asyncio.sleep(10)
+def _check_loop(check: _AnyCheck) -> None:
+    time.sleep(10)
     while True:
         try:
             if isinstance(check, SiteHealthCheckConfig):
-                await _run_site_health_check(check)
+                _run_site_health_check(check)
             elif isinstance(check, JsonValueCheckConfig):
-                await _run_json_value_check(check)
-        except asyncio.CancelledError:
-            logger.info("Check loop cancelado", extra={"check_name": check.name})
-            raise
+                _run_json_value_check(check)
         except Exception:
             logger.exception(
                 "Erro não tratado no check loop — continuando",
                 extra={"check_name": check.name},
             )
-        await asyncio.sleep(check.interval_seconds)
+        time.sleep(check.interval_seconds)
 
 
 @kopf.on.startup()
@@ -184,10 +182,12 @@ async def synthetic_monitor_startup(**kwargs: Any) -> None:
         return
 
     for check in config.checks:
-        asyncio.create_task(
-            _check_loop(check),
+        threading.Thread(
+            target=_check_loop,
+            args=(check,),
             name=f"synthetic-monitor-{check.name}",
-        )
+            daemon=True,
+        ).start()
         logger.info(
             "Check sintético registrado",
             extra={
@@ -204,7 +204,7 @@ async def synthetic_monitor_startup(**kwargs: Any) -> None:
 # e chamadores externos que importam run_synthetic_site_check diretamente.
 # ---------------------------------------------------------------------------
 
-async def run_synthetic_site_check() -> None:
+def run_synthetic_site_check() -> None:
     monitor_name = settings.synthetic_monitor_name
     target_url = settings.synthetic_monitor_url
     timeout_seconds = settings.synthetic_monitor_timeout_seconds
@@ -230,7 +230,7 @@ async def run_synthetic_site_check() -> None:
         target_url=target_url,
         timeout_seconds=timeout_seconds,
     )
-    result = await checker.check()
+    result = checker.check()
 
     if not settings.datadog_api_key:
         logger.error(

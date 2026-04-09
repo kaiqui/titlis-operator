@@ -1,20 +1,20 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
 
 
 class TestSyntheticSiteHealthChecker:
-    @pytest.mark.asyncio
-    async def test_check_returns_healthy_on_http_200(self):
+    def test_check_returns_healthy_on_http_200(self):
         mock_response = MagicMock(status_code=200)
 
         with patch(
-            "src.infrastructure.synthetic.site_health.httpx.AsyncClient"
+            "src.infrastructure.synthetic.site_health.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.site_health import (
                 SyntheticSiteHealthChecker,
@@ -26,21 +26,21 @@ class TestSyntheticSiteHealthChecker:
                 timeout_seconds=5.0,
             )
 
-            result = await checker.check()
+            result = checker.check()
 
             assert result.is_healthy is True
             assert result.status_code == 200
             assert result.target_host == "jeitto.com.br"
             assert result.reason == "HTTP 200"
 
-    @pytest.mark.asyncio
-    async def test_check_returns_unhealthy_on_timeout(self):
+    def test_check_returns_unhealthy_on_timeout(self):
         with patch(
-            "src.infrastructure.synthetic.site_health.httpx.AsyncClient"
+            "src.infrastructure.synthetic.site_health.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.side_effect = httpx.TimeoutException("timeout")
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.site_health import (
                 SyntheticSiteHealthChecker,
@@ -52,7 +52,7 @@ class TestSyntheticSiteHealthChecker:
                 timeout_seconds=1.0,
             )
 
-            result = await checker.check()
+            result = checker.check()
 
             assert result.is_healthy is False
             assert result.status_code is None
@@ -100,8 +100,7 @@ class TestSyntheticSiteMetricsManager:
 
 
 class TestSyntheticMonitorController:
-    @pytest.mark.asyncio
-    async def test_skips_when_no_target_url(self):
+    def test_skips_when_no_target_url(self):
         with patch(
             "src.controllers.synthetic_monitor_controller.settings"
         ) as mock_settings:
@@ -113,10 +112,9 @@ class TestSyntheticMonitorController:
                 run_synthetic_site_check,
             )
 
-            await run_synthetic_site_check()
+            run_synthetic_site_check()
 
-    @pytest.mark.asyncio
-    async def test_full_cycle_healthy(self):
+    def test_full_cycle_healthy(self):
         mock_result = MagicMock()
         mock_result.is_healthy = True
         mock_result.status_code = 200
@@ -151,7 +149,7 @@ class TestSyntheticMonitorController:
             mock_settings.datadog_app_key = None
             mock_settings.datadog_site = "datadoghq.com"
 
-            mock_checker_cls.return_value.check = AsyncMock(return_value=mock_result)
+            mock_checker_cls.return_value.check = MagicMock(return_value=mock_result)
             mock_metrics_instance = MagicMock()
             mock_metrics_cls.return_value = mock_metrics_instance
 
@@ -159,14 +157,13 @@ class TestSyntheticMonitorController:
                 run_synthetic_site_check,
             )
 
-            await run_synthetic_site_check()
+            run_synthetic_site_check()
 
             mock_metrics_instance.send_check_result.assert_called_once_with(
                 mock_result.to_dict.return_value
             )
 
-    @pytest.mark.asyncio
-    async def test_skips_metrics_when_no_api_key(self):
+    def test_skips_metrics_when_no_api_key(self):
         mock_result = MagicMock()
         mock_result.is_healthy = False
         mock_result.status_code = 503
@@ -189,12 +186,12 @@ class TestSyntheticMonitorController:
             mock_settings.synthetic_monitor_timeout_seconds = 5.0
             mock_settings.datadog_api_key = None
 
-            mock_checker_cls.return_value.check = AsyncMock(return_value=mock_result)
+            mock_checker_cls.return_value.check = MagicMock(return_value=mock_result)
 
             from src.controllers.synthetic_monitor_controller import (
                 run_synthetic_site_check,
             )
 
-            await run_synthetic_site_check()
+            run_synthetic_site_check()
 
             mock_metrics_cls.assert_not_called()

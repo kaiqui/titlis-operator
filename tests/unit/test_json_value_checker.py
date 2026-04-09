@@ -1,4 +1,4 @@
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 import pytest
@@ -38,17 +38,17 @@ class TestResolvePathFunction:
 
 
 class TestJsonValueChecker:
-    @pytest.mark.asyncio
-    async def test_returns_value_on_success(self):
+    def test_returns_value_on_success(self):
         mock_response = MagicMock(status_code=200)
         mock_response.json.return_value = {"balance": 1200.0}
 
         with patch(
-            "src.infrastructure.synthetic.json_value_checker.httpx.AsyncClient"
+            "src.infrastructure.synthetic.json_value_checker.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.json_value_checker import (
                 JsonValueChecker,
@@ -60,23 +60,23 @@ class TestJsonValueChecker:
                 timeout_seconds=5.0,
                 headers={},
             )
-            result = await checker.check(json_path="balance", metric_name="wallet.balance")
+            result = checker.check(json_path="balance", metric_name="wallet.balance")
 
         assert result.success is True
         assert result.value == 1200.0
         assert result.metric_name == "wallet.balance"
         assert result.reason == "ok"
 
-    @pytest.mark.asyncio
-    async def test_returns_failure_on_non_2xx(self):
+    def test_returns_failure_on_non_2xx(self):
         mock_response = MagicMock(status_code=503)
 
         with patch(
-            "src.infrastructure.synthetic.json_value_checker.httpx.AsyncClient"
+            "src.infrastructure.synthetic.json_value_checker.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.json_value_checker import (
                 JsonValueChecker,
@@ -88,23 +88,23 @@ class TestJsonValueChecker:
                 timeout_seconds=5.0,
                 headers={},
             )
-            result = await checker.check(json_path="balance", metric_name="wallet.balance")
+            result = checker.check(json_path="balance", metric_name="wallet.balance")
 
         assert result.success is False
         assert result.value is None
         assert "503" in result.reason
 
-    @pytest.mark.asyncio
-    async def test_returns_failure_when_path_missing(self):
+    def test_returns_failure_when_path_missing(self):
         mock_response = MagicMock(status_code=200)
         mock_response.json.return_value = {"other_field": 42}
 
         with patch(
-            "src.infrastructure.synthetic.json_value_checker.httpx.AsyncClient"
+            "src.infrastructure.synthetic.json_value_checker.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.json_value_checker import (
                 JsonValueChecker,
@@ -116,20 +116,20 @@ class TestJsonValueChecker:
                 timeout_seconds=5.0,
                 headers={},
             )
-            result = await checker.check(json_path="balance", metric_name="wallet.balance")
+            result = checker.check(json_path="balance", metric_name="wallet.balance")
 
         assert result.success is False
         assert result.value is None
         assert "balance" in result.reason
 
-    @pytest.mark.asyncio
-    async def test_returns_failure_on_timeout(self):
+    def test_returns_failure_on_timeout(self):
         with patch(
-            "src.infrastructure.synthetic.json_value_checker.httpx.AsyncClient"
+            "src.infrastructure.synthetic.json_value_checker.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.side_effect = httpx.TimeoutException("timed out")
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.json_value_checker import (
                 JsonValueChecker,
@@ -141,22 +141,22 @@ class TestJsonValueChecker:
                 timeout_seconds=1.0,
                 headers={},
             )
-            result = await checker.check(json_path="balance", metric_name="wallet.balance")
+            result = checker.check(json_path="balance", metric_name="wallet.balance")
 
         assert result.success is False
         assert result.reason == "timeout"
 
-    @pytest.mark.asyncio
-    async def test_nested_path(self):
+    def test_nested_path(self):
         mock_response = MagicMock(status_code=200)
         mock_response.json.return_value = {"data": {"account": {"balance": 99.9}}}
 
         with patch(
-            "src.infrastructure.synthetic.json_value_checker.httpx.AsyncClient"
+            "src.infrastructure.synthetic.json_value_checker.httpx.Client"
         ) as mock_client_cls:
-            mock_http = AsyncMock()
+            mock_http = MagicMock()
             mock_http.get.return_value = mock_response
-            mock_client_cls.return_value.__aenter__.return_value = mock_http
+            mock_client_cls.return_value.__enter__.return_value = mock_http
+            mock_client_cls.return_value.__exit__.return_value = False
 
             from src.infrastructure.synthetic.json_value_checker import (
                 JsonValueChecker,
@@ -168,7 +168,7 @@ class TestJsonValueChecker:
                 timeout_seconds=5.0,
                 headers={"X-Custom": "header"},
             )
-            result = await checker.check(
+            result = checker.check(
                 json_path="data.account.balance",
                 metric_name="account.balance",
             )
