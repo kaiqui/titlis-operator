@@ -62,6 +62,7 @@ data:
   TITLIS_API_HOST: "{{ default "titlis-api.titlis-system.svc.cluster.local" .Values.titlisApi.host }}"
   TITLIS_API_UDP_PORT: "{{ default 8125 .Values.titlisApi.udpPort }}"
   TITLIS_API_HTTP_PORT: "{{ default 8080 .Values.titlisApi.httpPort }}"
+  TITLIS_API_SCHEME: "{{ default "http" .Values.titlisApi.scheme }}"
 
   # Datadog
   DD_SITE: "{{ default "datadoghq.com" .Values.datadog.site }}"

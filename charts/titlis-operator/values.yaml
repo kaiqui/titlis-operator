@@ -110,6 +110,7 @@ titlisApi:
   host: "titlis-api.titlis-system.svc.cluster.local"
   udpPort: 8125
   httpPort: 8080
+  scheme: "http"
   # Secret must have key: TITLIS_API_API_KEY
   # Required when enabled=true — operator fails to start without it
   secretName: "titlis-api-keys"

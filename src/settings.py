@@ -11,6 +11,7 @@ class TitlisApiSettings(BaseSettings):
     host: str = Field(default="titlis-api.titlis-system.svc.cluster.local")
     udp_port: int = Field(default=8125)
     http_port: int = Field(default=8080)
+    scheme: str = Field(default="http")
     api_key: Optional[SecretStr] = Field(default=None)
 
     @model_validator(mode="after")
@@ -24,7 +25,7 @@ class TitlisApiSettings(BaseSettings):
 
     @property
     def http_base_url(self) -> str:
-        return f"http://{self.host}:{self.http_port}"
+        return f"{self.scheme}://{self.host}:{self.http_port}"
 
 
 class SlackSettings(BaseSettings):
