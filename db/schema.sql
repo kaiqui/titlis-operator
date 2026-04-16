@@ -477,6 +477,7 @@ CREATE TABLE IF NOT EXISTS titlis_oltp.platform_users (
     last_login_at    TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at       TIMESTAMPTZ,
     UNIQUE (tenant_id, email),
     CONSTRAINT chk_platform_users_role
         CHECK (platform_role IN ('admin', 'engineer', 'pm', 'viewer'))
@@ -523,6 +524,7 @@ CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_auth_integrations (
     activated_at               TIMESTAMPTZ,
     created_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+    deleted_at                 TIMESTAMPTZ,
     CONSTRAINT chk_auth_provider_type
         CHECK (provider_type IN ('okta', 'azure_ad', 'google_oidc', 'github_oidc', 'local')),
     CONSTRAINT chk_auth_integration_kind
@@ -663,7 +665,8 @@ CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_api_keys (
     last_used_at        TIMESTAMPTZ,
     created_by_user_id  BIGINT      REFERENCES titlis_oltp.platform_users(platform_user_id),
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    revoked_at          TIMESTAMPTZ
+    revoked_at          TIMESTAMPTZ,
+    deleted_at          TIMESTAMPTZ
 );
 
 COMMENT ON TABLE  titlis_oltp.tenant_api_keys                        IS 'API keys para autenticação do operator (modelo Datadog agent key). O operator envia key no envelope UDP e a API resolve o tenant sem depender de DEFAULT_TENANT_ID.';
