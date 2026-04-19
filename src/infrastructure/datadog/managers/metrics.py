@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from src.domain.github_models import DatadogProfilingMetrics
+from src.domain.models import DatadogProfilingMetrics
 from src.infrastructure.datadog.managers.base import DatadogManagerBase
 from src.utils.json_logger import get_logger
 

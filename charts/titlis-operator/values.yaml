@@ -41,6 +41,14 @@ controllers:
   scorecardEnabled: true
   sloEnabled: true
   autoRemediationEnabled: true
+  # Auto-criação de SLOs para Deployments com Datadog instrumentado
+  # Desabilitado por padrão — opt-in por cluster
+  autoSloCreationEnabled: false
+  autoSloDefaultTarget: "99.9"
+  autoSloDefaultWarning: "99.0"
+  autoSloDefaultTimeframe: "30d"
+  autoSloRequireDatadogService: "true"
+  autoSloPendingChangesPollIntervalSeconds: "30"
 
 # Remediação — Feature flags de ações
 remediation:

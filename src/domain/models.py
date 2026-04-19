@@ -303,3 +303,8 @@ class ScorecardConfig:
     enable_drift_detection: bool = True
     store_history: bool = False
     max_history_per_resource: int = 10
+
+
+class DatadogProfilingMetrics(BaseModel):
+    cpu_avg_millicores: Optional[float] = None
+    memory_avg_mib: Optional[float] = None

@@ -17,6 +17,7 @@ class SLOService:
         spec: SLOConfigSpec,
         existing_slos: List[SLO],
         resource_uid: Optional[str] = None,
+        env: str = "production",
     ) -> Optional[Dict[str, Any]]:
         slo_uid = f"slo_uid:{namespace}:{service}"
 
@@ -26,7 +27,7 @@ class SLOService:
                 and "managed_by:titlis_operator" in existing_slo.tags
             ):
                 desired_slo = self._build_slo_from_spec(
-                    namespace, service, spec, resource_uid
+                    namespace, service, spec, resource_uid, env
                 )
 
                 needs_update = self._compare_slo_parameters(existing_slo, desired_slo)
@@ -189,6 +190,12 @@ class SLOService:
         )
         return SLOAppFramework.WSGI, "fallback"
 
+    def _extract_env_from_spec(self, spec: SLOConfigSpec) -> str:
+        for tag in spec.tags:
+            if tag.startswith("env:"):
+                return tag.split(":", 1)[1].strip()
+        return "production"
+
     def reconcile_slo(
         self,
         namespace: str,
@@ -209,6 +216,19 @@ class SLOService:
             },
         )
 
+        service_def = self.datadog_port.get_service_definition(service)
+        if service_def is None:
+            self.logger.warning(
+                "Serviço não encontrado no catálogo Datadog — SLO não será criado",
+                extra={"service": service, "namespace": namespace},
+            )
+            return {
+                "success": False,
+                "action": "skipped_no_datadog_service",
+                "slo_name": f"slo_uid:{namespace}:{service}",
+                "error": f"Serviço '{service}' não encontrado no catálogo Datadog",
+            }
+
         effective_spec = spec
         detection_source = "explicit"
         if spec.auto_detect_framework and spec.app_framework is None:
@@ -221,12 +241,13 @@ class SLOService:
             effective_spec.app_framework.value if effective_spec.app_framework else None
         )
         slo_name = f"slo_uid:{namespace}:{service}"
+        env = self._extract_env_from_spec(effective_spec)
 
         try:
             # Path A: known_slo_id from status — fast path, skip search
             if known_slo_id:
                 desired_slo = self._build_slo_from_spec(
-                    namespace, service, effective_spec, resource_uid
+                    namespace, service, effective_spec, resource_uid, env
                 )
                 success = self.datadog_port.update_slo_apps(known_slo_id, desired_slo)
                 self.logger.info(
@@ -250,7 +271,7 @@ class SLOService:
                 )
                 if orphan and orphan.slo_id:
                     desired_slo = self._build_slo_from_spec(
-                        namespace, service, effective_spec, resource_uid
+                        namespace, service, effective_spec, resource_uid, env
                     )
                     success = self.datadog_port.update_slo_apps(
                         orphan.slo_id, desired_slo
@@ -273,7 +294,7 @@ class SLOService:
             existing_slos = self.datadog_port.get_service_slos(service)
 
             update_result = self.check_and_update_existing_slo(
-                namespace, service, effective_spec, existing_slos, resource_uid
+                namespace, service, effective_spec, existing_slos, resource_uid, env
             )
 
             if update_result:
@@ -284,7 +305,7 @@ class SLOService:
             self.logger.info("Criando novo SLO", extra={"slo_name": slo_name})
 
             new_slo = self._build_slo_from_spec(
-                namespace, service, effective_spec, resource_uid
+                namespace, service, effective_spec, resource_uid, env
             )
 
             slo_id = self.datadog_port.create_slo(new_slo)
@@ -329,6 +350,7 @@ class SLOService:
         service: str,
         spec: SLOConfigSpec,
         resource_uid: Optional[str] = None,
+        env: str = "production",
     ) -> SLO:
         tags = [
             f"namespace:{namespace}",
@@ -347,24 +369,24 @@ class SLOService:
                 and spec.type == SLOType.METRIC
             ):
                 query = {
-                    "numerator": f"sum:trace.wsgi.request.hits{{env:dev,service:{service},span.kind:server}}.as_count()",
-                    "denominator": f"sum:trace.wsgi.request.hits{{env:dev,service:{service},span.kind:server}}.as_count() - sum:trace.wsgi.request.errors{{env:dev,service:{service},span.kind:server}}.as_count()",
+                    "numerator": f"sum:trace.wsgi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count()",
+                    "denominator": f"sum:trace.wsgi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count() - sum:trace.wsgi.request.errors{{env:{env},service:{service},span.kind:server}}.as_count()",
                 }
             elif (
                 spec.app_framework == SLOAppFramework.FASTAPI
                 and spec.type == SLOType.METRIC
             ):
                 query = {
-                    "numerator": f"sum:trace.fastapi.request.hits{{env:dev,service:{service},span.kind:server}}.as_count()",
-                    "denominator": f"sum:trace.fastapi.request.hits{{env:dev,service:{service},span.kind:server}}.as_count() - sum:trace.fastapi.request.errors{{env:dev,service:{service},span.kind:server}}.as_count()",
+                    "numerator": f"sum:trace.fastapi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count()",
+                    "denominator": f"sum:trace.fastapi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count() - sum:trace.fastapi.request.errors{{env:{env},service:{service},span.kind:server}}.as_count()",
                 }
             elif (
                 spec.app_framework == SLOAppFramework.AIOHTTP
                 and spec.type == SLOType.METRIC
             ):
                 query = {
-                    "numerator": f"sum:trace.aiohttp.request.hits{{env:dev,service:{service},span.kind:server}}.as_count()",
-                    "denominator": f"sum:trace.aiohttp.request.hits{{env:dev,service:{service},span.kind:server}}.as_count() - sum:trace.aiohttp.request.errors{{env:dev,service:{service},span.kind:server}}.as_count()",
+                    "numerator": f"sum:trace.aiohttp.request.hits{{env:{env},service:{service},span.kind:server}}.as_count()",
+                    "denominator": f"sum:trace.aiohttp.request.hits{{env:{env},service:{service},span.kind:server}}.as_count() - sum:trace.aiohttp.request.errors{{env:{env},service:{service},span.kind:server}}.as_count()",
                 }
             elif spec.type == SLOType.METRIC and spec.numerator and spec.denominator:
                 query = {"numerator": spec.numerator, "denominator": spec.denominator}

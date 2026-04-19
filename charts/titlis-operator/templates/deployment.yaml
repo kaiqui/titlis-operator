@@ -156,6 +156,38 @@ spec:
                   name: {{ include "titlis.fullname" . }}-config
                   key: ENABLE_AUTO_REMEDIATION
 
+            # ── SLO Auto-Detection ──────────────────────────────────────────
+            - name: ENABLE_AUTO_SLO_CREATION
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: ENABLE_AUTO_SLO_CREATION
+            - name: AUTO_SLO_DEFAULT_TARGET
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: AUTO_SLO_DEFAULT_TARGET
+            - name: AUTO_SLO_DEFAULT_WARNING
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: AUTO_SLO_DEFAULT_WARNING
+            - name: AUTO_SLO_DEFAULT_TIMEFRAME
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: AUTO_SLO_DEFAULT_TIMEFRAME
+            - name: AUTO_SLO_REQUIRE_DATADOG_SERVICE
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: AUTO_SLO_REQUIRE_DATADOG_SERVICE
+            - name: AUTO_SLO_PENDING_CHANGES_POLL_INTERVAL_SECONDS
+              valueFrom:
+                configMapKeyRef:
+                  name: {{ include "titlis.fullname" . }}-config
+                  key: AUTO_SLO_PENDING_CHANGES_POLL_INTERVAL_SECONDS
+
             # ── CAST AI Monitor ─────────────────────────────────────────────
             - name: ENABLE_CASTAI_MONITOR
               valueFrom:

@@ -2,7 +2,7 @@ import traceback
 from typing import List, Optional, Dict, Any
 
 from src.domain.models import ServiceDefinition, SLO, SLOType, SLOTimeframe
-from src.domain.github_models import DatadogProfilingMetrics
+from src.domain.models import DatadogProfilingMetrics
 from src.application.ports.datadog_port import DatadogPort
 from src.infrastructure.datadog.factory import DatadogManagerFactory
 from src.utils.json_logger import get_logger

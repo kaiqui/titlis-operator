@@ -3,8 +3,8 @@ import json
 import time
 import logging
 
-from src.application.ports.titlis_api_port import TitlisApiPort, RemediationState
-from typing import Optional
+from src.application.ports.titlis_api_port import TitlisApiPort, RemediationState, SLOPendingChange
+from typing import List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +98,76 @@ class TitlisApiUdpClient(TitlisApiPort):
                 extra={"workload_id": workload_id, "error": str(exc)},
             )
             return None
+
+    async def get_pending_slo_changes(self) -> List[SLOPendingChange]:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(
+                    f"{self._http_base_url}/v1/operator/pending-slo-changes",
+                    headers={"X-Api-Key": self._api_key},
+                )
+                if resp.status_code == 404:
+                    return []
+                resp.raise_for_status()
+                items = resp.json()
+                return [
+                    SLOPendingChange(
+                        id=item["id"],
+                        slo_config_name=item["slo_config_name"],
+                        namespace=item["namespace"],
+                        field=item["field"],
+                        old_value=item["old_value"],
+                        new_value=item["new_value"],
+                        requested_by=item.get("requested_by", "unknown"),
+                        extra=item,
+                    )
+                    for item in items
+                ]
+        except Exception as exc:
+            logger.warning(
+                "titlis_api_get_pending_slo_changes_failed",
+                extra={"error": str(exc)},
+            )
+            return []
+
+    async def confirm_slo_change_applied(self, change_id: str) -> bool:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{self._http_base_url}/v1/operator/pending-slo-changes/{change_id}/applied",
+                    headers={"X-Api-Key": self._api_key},
+                )
+                resp.raise_for_status()
+                return True
+        except Exception as exc:
+            logger.warning(
+                "titlis_api_confirm_slo_change_applied_failed",
+                extra={"change_id": change_id, "error": str(exc)},
+            )
+            return False
+
+    async def confirm_slo_change_failed(self, change_id: str, error: str) -> bool:
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    f"{self._http_base_url}/v1/operator/pending-slo-changes/{change_id}/failed",
+                    headers={"X-Api-Key": self._api_key},
+                    json={"error": error},
+                )
+                resp.raise_for_status()
+                return True
+        except Exception as exc:
+            logger.warning(
+                "titlis_api_confirm_slo_change_failed_failed",
+                extra={"change_id": change_id, "error": str(exc)},
+            )
+            return False
 
     async def close(self) -> None:
         if self._transport and not self._transport.is_closing():

@@ -1,32 +1,27 @@
 import os
 import kopf
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
 
 from src.controllers.base import BaseController
 from src.bootstrap.dependencies import (
-    get_remediation_service,
-    get_remediation_writer,
     get_scorecard_service,
     get_appscorecard_writer,
     get_titlis_api_client,
 )
-from src.domain.github_models import RemediationIssue, RemediationRequest
 from src.domain.slack_models import NotificationChannel, NotificationSeverity
 from src.domain.models import ResourceScorecard
-from src.application.services.remediation_service import REMEDIABLE_RULE_IDS
 from src.application.services.namespace_notification_buffer import (
     NamespaceNotificationBuffer,
 )
 from src.settings import settings
+from src.infrastructure.kubernetes.client import get_k8s_apis
 
 
 class ScorecardController(BaseController):
     def __init__(self) -> None:
         super().__init__("scorecard")
         self.scorecard_service = get_scorecard_service()
-        self.remediation_service = get_remediation_service()
-        self.remediation_writer = get_remediation_writer()
         self.appscorecard_writer = get_appscorecard_writer()
         self._notification_buffer = NamespaceNotificationBuffer(
             digest_interval_minutes=15
@@ -36,7 +31,6 @@ class ScorecardController(BaseController):
             extra={
                 "scorecard_service_available": self.scorecard_service is not None,
                 "slack_service_available": self.slack_service is not None,
-                "remediation_service_available": self.remediation_service is not None,
                 "appscorecard_writer_available": self.appscorecard_writer is not None,
             },
         )
@@ -82,27 +76,24 @@ class ScorecardController(BaseController):
                 },
             )
 
-            remediation_pr_meta: Optional[Dict[str, Any]] = None
-
-            if self.remediation_service:
-                remediation_pr_meta = await self._maybe_create_remediation_pr(
-                    scorecard, ctx, body
-                )
-                if remediation_pr_meta and self.remediation_writer:
-                    self._record_remediation(remediation_pr_meta, ctx, body)
-
             if self.appscorecard_writer:
                 try:
                     self.appscorecard_writer.upsert(
                         scorecard=scorecard,
                         deployment_body=body,
-                        remediation_pr=remediation_pr_meta,
+                        remediation_pr=None,
                     )
                 except Exception:
                     self.logger.exception(
                         "Falha ao escrever AppScorecard CRD",
                         extra=ctx,
                     )
+
+            if settings.enable_auto_slo_creation:
+                dd_labels = self._extract_dd_labels(body)
+                if dd_labels and self._ops001_passed(scorecard):
+                    dd_service, dd_env = dd_labels
+                    await self._maybe_auto_create_slo(body, namespace, dd_service, dd_env)
 
             should_notify = self.scorecard_service.should_notify(scorecard)
             if should_notify:
@@ -204,97 +195,6 @@ class ScorecardController(BaseController):
             self.logger.exception("Erro ao processar Deployment", extra=ctx)
             return {"evaluated": False, "error": "Erro ao processar Deployment"}
 
-    async def _maybe_create_remediation_pr(
-        self,
-        scorecard: Any,
-        ctx: Dict[str, Any],
-        resource_body: Dict[str, Any],
-    ) -> Optional[Dict[str, Any]]:
-        remediable_issues: List[RemediationIssue] = []
-
-        for pillar_score in scorecard.pillar_scores.values():
-            for validation in pillar_score.validation_results:
-                if not validation.passed and validation.rule_id in REMEDIABLE_RULE_IDS:
-                    remediable_issues.append(
-                        RemediationIssue(
-                            rule_id=validation.rule_id,
-                            rule_name=validation.rule_name,
-                            description=validation.message,
-                            remediation=validation.remediation or "",
-                        )
-                    )
-
-        if not remediable_issues:
-            return None
-
-        request = RemediationRequest(
-            resource_name=scorecard.resource_name,
-            namespace=scorecard.resource_namespace,
-            resource_kind=scorecard.resource_kind,
-            issues=remediable_issues,
-            resource_body=resource_body,
-            base_branch=settings.github.base_branch,
-        )
-
-        self.logger.info(
-            "Disparando remediacao automatica",
-            extra={**ctx, "remediable_issues": [i.rule_id for i in remediable_issues]},
-        )
-
-        result = await self.remediation_service.create_remediation_pr(request)
-
-        if result.success and result.pull_request:
-            pr = result.pull_request
-            self.logger.info(
-                "PR de remediacao criado com sucesso",
-                extra={
-                    **ctx,
-                    "pr_number": pr.number,
-                    "pr_url": pr.url,
-                    "branch": result.branch_name,
-                },
-            )
-            return {
-                "prNumber": pr.number,
-                "prUrl": pr.url,
-                "prBranch": result.branch_name,
-                "status": "open",
-                "createdAt": pr.created_at.isoformat(),
-                "issuesFixed": [i.rule_id for i in remediable_issues],
-            }
-        self.logger.warning(
-            "Falha na remediacao automatica",
-            extra={**ctx, "error": result.error},
-        )
-        return None
-
-    def _record_remediation(
-        self,
-        pr_meta: Dict[str, Any],
-        ctx: Dict[str, Any],
-        deployment_body: Dict[str, Any],
-    ) -> None:
-        try:
-            if not self.remediation_writer:
-                return
-            meta = deployment_body.get("metadata", {})
-            issues = [
-                {"ruleId": rule_id, "ruleName": rule_id}
-                for rule_id in pr_meta.get("issuesFixed", [])
-            ]
-            self.remediation_writer.record(
-                namespace=ctx["resource_namespace"],
-                deployment_name=ctx["resource_name"],
-                deployment_uid=meta.get("uid", ""),
-                pr_meta=pr_meta,
-                issues=issues,
-            )
-        except Exception:
-            self.logger.exception(
-                "Falha ao registrar AppRemediation CRD",
-                extra=ctx,
-            )
-
     @staticmethod
     def _runtime_environment() -> str:
         return os.environ.get("APP_ENV") or os.environ.get("DD_ENV") or "unknown"
@@ -321,6 +221,125 @@ class ScorecardController(BaseController):
         if rule_id in {"RES-003", "RES-004", "RES-005", "RES-006", "PERF-001"}:
             return "resources"
         return None
+
+    @staticmethod
+    def _extract_dd_labels(body: Dict[str, Any]) -> Optional[Tuple[str, str]]:
+        pod_labels = (
+            body.get("spec", {})
+            .get("template", {})
+            .get("metadata", {})
+            .get("labels", {})
+        )
+        dd_service = pod_labels.get("tags.datadoghq.com/service")
+        dd_env = pod_labels.get("tags.datadoghq.com/env")
+        if dd_service and dd_env:
+            return dd_service, dd_env
+        return None
+
+    @staticmethod
+    def _ops001_passed(scorecard: ResourceScorecard) -> bool:
+        from src.domain.models import ValidationPillar
+        pillar_score = scorecard.pillar_scores.get(ValidationPillar.OPERATIONAL)
+        if pillar_score is None:
+            return False
+        for result in pillar_score.validation_results:
+            if result.rule_id == "OPS-001":
+                return result.passed
+        return False
+
+    def _find_sloconfig_by_source_uid(
+        self, deployment_uid: str, namespace: str
+    ) -> Optional[Dict[str, Any]]:
+        try:
+            _, _, custom = get_k8s_apis()
+            result = custom.list_namespaced_custom_object(
+                group="titlis.io",
+                version="v1",
+                namespace=namespace,
+                plural="sloconfigs",
+                label_selector=f"titlis.io/source-uid={deployment_uid}",
+            )
+            items = result.get("items", [])
+            return items[0] if items else None
+        except Exception:
+            self.logger.exception(
+                "Erro ao buscar SLOConfig por source-uid",
+                extra={"deployment_uid": deployment_uid, "namespace": namespace},
+            )
+            return None
+
+    def _apply_sloconfig(self, body: Dict[str, Any], namespace: str) -> bool:
+        try:
+            _, _, custom = get_k8s_apis()
+            custom.create_namespaced_custom_object(
+                group="titlis.io",
+                version="v1",
+                namespace=namespace,
+                plural="sloconfigs",
+                body=body,
+            )
+            return True
+        except Exception:
+            self.logger.exception(
+                "Erro ao criar SLOConfig CRD",
+                extra={"crd_name": body.get("metadata", {}).get("name"), "namespace": namespace},
+            )
+            return False
+
+    async def _maybe_auto_create_slo(
+        self,
+        body: Dict[str, Any],
+        namespace: str,
+        dd_service: str,
+        dd_env: str,
+    ) -> None:
+        deployment_uid = body.get("metadata", {}).get("uid")
+        if not deployment_uid:
+            return
+
+        existing = self._find_sloconfig_by_source_uid(deployment_uid, namespace)
+        if existing:
+            self.logger.debug(
+                "SLOConfig já existe para este deployment — skip",
+                extra={"deployment_uid": deployment_uid, "namespace": namespace},
+            )
+            return
+
+        slo_config_body: Dict[str, Any] = {
+            "apiVersion": "titlis.io/v1",
+            "kind": "SLOConfig",
+            "metadata": {
+                "name": f"auto-{dd_service}",
+                "namespace": namespace,
+                "labels": {
+                    "titlis.io/auto-created": "true",
+                    "titlis.io/source-uid": deployment_uid,
+                    "titlis.io/source-name": body.get("metadata", {}).get("name", ""),
+                    "titlis.io/source-namespace": namespace,
+                    "titlis.io/dd-env": dd_env,
+                },
+            },
+            "spec": {
+                "service": dd_service,
+                "auto_detect_framework": True,
+                "target": settings.auto_slo_default_target,
+                "warning": settings.auto_slo_default_warning,
+                "timeframe": settings.auto_slo_default_timeframe,
+                "tags": [f"env:{dd_env}", "managed_by:titlis_operator"],
+            },
+        }
+
+        success = self._apply_sloconfig(slo_config_body, namespace)
+        if success:
+            self.logger.info(
+                "SLOConfig auto-criado",
+                extra={
+                    "service": dd_service,
+                    "namespace": namespace,
+                    "dd_env": dd_env,
+                    "deployment_uid": deployment_uid,
+                },
+            )
 
     async def _send_namespace_digest(
         self,

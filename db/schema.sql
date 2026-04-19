@@ -1083,6 +1083,60 @@ CREATE INDEX IF NOT EXISTS idx_remediation_status       ON titlis_oltp.app_remed
 CREATE INDEX IF NOT EXISTS idx_val_results_rule_passed  ON titlis_oltp.validation_results (validation_rule_id, rule_passed);
 
 -- ================================================================
+-- SLO AUTO-DETECTION — colunas de rastreabilidade em slo_configs
+-- ================================================================
+ALTER TABLE titlis_oltp.slo_configs
+    ADD COLUMN IF NOT EXISTS auto_created              BOOLEAN     NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS source_deployment_uid     VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS source_deployment_name    VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS source_namespace          VARCHAR(255),
+    ADD COLUMN IF NOT EXISTS dd_env                    VARCHAR(100);
+
+COMMENT ON COLUMN titlis_oltp.slo_configs.auto_created           IS 'true quando criado automaticamente pelo ScorecardController (label titlis.io/auto-created)';
+COMMENT ON COLUMN titlis_oltp.slo_configs.source_deployment_uid  IS 'UID do Deployment K8s que originou a auto-criação (label titlis.io/source-uid)';
+COMMENT ON COLUMN titlis_oltp.slo_configs.source_deployment_name IS 'Nome do Deployment K8s que originou a auto-criação (label titlis.io/source-name)';
+COMMENT ON COLUMN titlis_oltp.slo_configs.source_namespace       IS 'Namespace do Deployment de origem (label titlis.io/source-namespace)';
+COMMENT ON COLUMN titlis_oltp.slo_configs.dd_env                 IS 'Ambiente Datadog extraído de tags.datadoghq.com/env — usa env dinâmico na query em vez de env:dev hardcoded';
+
+CREATE INDEX IF NOT EXISTS idx_slo_auto_created      ON titlis_oltp.slo_configs (auto_created) WHERE auto_created = TRUE;
+CREATE INDEX IF NOT EXISTS idx_slo_source_uid        ON titlis_oltp.slo_configs (source_deployment_uid) WHERE source_deployment_uid IS NOT NULL;
+
+-- ================================================================
+-- SLO PENDING CHANGES — fila de mudanças de threshold via titlis-ai
+-- ================================================================
+CREATE TABLE IF NOT EXISTS titlis_oltp.slo_config_pending_changes (
+    id                UUID          NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    tenant_id         BIGINT        NOT NULL REFERENCES titlis_oltp.tenants(tenant_id) ON DELETE CASCADE,
+    slo_config_name   TEXT          NOT NULL,
+    namespace         TEXT          NOT NULL,
+    field             TEXT          NOT NULL,
+    old_value         TEXT          NOT NULL,
+    new_value         TEXT          NOT NULL,
+    requested_by      TEXT          NOT NULL,
+    status            TEXT          NOT NULL DEFAULT 'pending',
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    applied_at        TIMESTAMPTZ,
+    error             TEXT,
+    CONSTRAINT chk_slo_pending_field   CHECK (field   IN ('target', 'warning', 'timeframe')),
+    CONSTRAINT chk_slo_pending_status  CHECK (status  IN ('pending', 'applied', 'failed', 'cancelled'))
+);
+
+COMMENT ON TABLE  titlis_oltp.slo_config_pending_changes                IS 'Fila de mudanças de threshold de SLO solicitadas via titlis-ai, aguardando aplicação pelo operator';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.tenant_id      IS 'Tenant dono do SLOConfig — garante isolamento no polling do operator';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.slo_config_name IS 'Nome do SLOConfig CRD no Kubernetes (metadata.name)';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.namespace      IS 'Namespace Kubernetes onde o SLOConfig está instalado';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.field          IS 'Campo do spec a ser alterado: target, warning ou timeframe';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.old_value      IS 'Valor atual antes da mudança — para auditoria e rollback manual';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.new_value      IS 'Valor desejado após a mudança';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.requested_by   IS 'Ator que solicitou: titlis-ai ou user:{user_id}';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.status         IS 'pending = aguardando operator; applied = CRD patchado; failed = erro; cancelled = cancelado';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.applied_at     IS 'Quando o operator confirmou a aplicação do patch no CRD';
+COMMENT ON COLUMN titlis_oltp.slo_config_pending_changes.error          IS 'Mensagem de erro se status = failed';
+
+CREATE INDEX IF NOT EXISTS idx_slo_pending_tenant_status ON titlis_oltp.slo_config_pending_changes (tenant_id, status) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_slo_pending_created       ON titlis_oltp.slo_config_pending_changes (created_at DESC);
+
+-- ================================================================
 -- ROLES E PERMISSÕES
 -- ================================================================
 -- Criar roles antes de executar este bloco em produção:
@@ -1111,3 +1165,84 @@ CREATE INDEX IF NOT EXISTS idx_val_results_rule_passed  ON titlis_oltp.validatio
 --     'titlis_audit.app_scorecard_history',
 --     'evaluated_at', 'native', 'quarterly'
 -- );
+
+-- ============================================================
+-- AI Assistant — Fase 1
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_ai_configs (
+    tenant_id              BIGINT        NOT NULL PRIMARY KEY REFERENCES titlis_oltp.tenants(tenant_id) ON DELETE CASCADE,
+    provider               TEXT          NOT NULL,
+    model                  TEXT          NOT NULL,
+    api_key_enc            TEXT          NOT NULL,
+    github_token_enc       TEXT,
+    github_base_branch     TEXT          NOT NULL DEFAULT 'main',
+    monthly_token_budget   INTEGER,
+    tokens_used_month      INTEGER       NOT NULL DEFAULT 0,
+    is_active              BOOLEAN       NOT NULL DEFAULT true,
+    created_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    updated_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
+    CONSTRAINT chk_ai_provider CHECK (provider IN ('openai','anthropic','google','mistral','cohere','azure','ollama'))
+);
+
+COMMENT ON TABLE  titlis_oltp.tenant_ai_configs                IS 'Configuração de provider/model de IA por tenant';
+COMMENT ON COLUMN titlis_oltp.tenant_ai_configs.api_key_enc    IS 'API key do provider. Fase 1: texto plano protegido por auth. Fase 2+: BYTEA criptografado.';
+COMMENT ON COLUMN titlis_oltp.tenant_ai_configs.github_token_enc IS 'GitHub token para abertura de PRs (migrado do operator). Mesma política de criptografia.';
+
+-- ============================================================
+-- AI Assistant — Fase 2: RAG / Knowledge Base
+-- Requer: CREATE EXTENSION vector (pgvector >= 0.5).
+-- Em ambientes sem pgvector, o DatabaseFactory usa tryExecDdl
+-- para pular a criação graciosamente — a API sobe sem o RAG.
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE SCHEMA IF NOT EXISTS titlis_ai;
+
+-- ----------------------------------------------------------------
+-- knowledge_chunks
+-- Armazena embeddings de texto para RAG.
+-- Chunks globais (tenant_id IS NULL) são visíveis a todos os tenants;
+-- chunks de tenant (tenant_id NOT NULL) são privados.
+-- Busca de similaridade por distância cosseno (operador <=>).
+-- ----------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS titlis_ai.knowledge_chunks (
+    chunk_id    UUID         NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    tenant_id   BIGINT       REFERENCES titlis_oltp.tenants(tenant_id) ON DELETE CASCADE,
+    source_type TEXT         NOT NULL,
+    source_id   TEXT         NOT NULL,
+    chunk_text  TEXT         NOT NULL,
+    embedding   VECTOR(1536) NOT NULL,
+    metadata    JSONB,
+    created_at  TIMESTAMPTZ  NOT NULL DEFAULT now()
+);
+
+COMMENT ON TABLE  titlis_ai.knowledge_chunks              IS 'Embeddings de texto para RAG: documentação de regras (global) e remediações passadas (por tenant)';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.chunk_id     IS 'Chave primária UUID gerada automaticamente';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.tenant_id    IS 'NULL = chunk global visível a todos os tenants; NOT NULL = chunk privado do tenant';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.source_type  IS 'Tipo da fonte: global_rule_doc | past_remediation';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.source_id    IS 'Identificador único da fonte (ex: RES-001, pr-42-wl-7)';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.embedding    IS 'Vetor de embedding dimensão 1536 (text-embedding-3-small)';
+COMMENT ON COLUMN titlis_ai.knowledge_chunks.metadata     IS 'Metadados extras em JSON: rule_title, pillar, severity, pr_url, etc.';
+
+CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_tenant
+    ON titlis_ai.knowledge_chunks (tenant_id);
+
+-- Unicidade para chunks globais: no máximo um chunk por (source_type, source_id) quando tenant_id IS NULL
+CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_chunks_global_src
+    ON titlis_ai.knowledge_chunks (source_type, source_id)
+    WHERE tenant_id IS NULL;
+
+-- Unicidade para chunks de tenant: no máximo um chunk por (tenant_id, source_type, source_id)
+CREATE UNIQUE INDEX IF NOT EXISTS uq_knowledge_chunks_tenant_src
+    ON titlis_ai.knowledge_chunks (tenant_id, source_type, source_id)
+    WHERE tenant_id IS NOT NULL;
+
+-- Índice IVFFlat para busca de similaridade por cosseno.
+-- Requer dados pré-existentes para ser eficiente (lists = 100 pressupõe >= 10.000 linhas).
+-- Criado separadamente no DatabaseFactory com tryExecDdl para tolerar falha em tabela vazia.
+-- CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_embedding
+--     ON titlis_ai.knowledge_chunks
+--     USING ivfflat (embedding vector_cosine_ops)
+--     WITH (lists = 100);
