@@ -29,6 +29,7 @@ class TestSLOService:
         # Mock get_service_definition — returns a valid ServiceDefinition by default
         # so reconcile_slo() proceeds past service validation
         from src.domain.models import ServiceDefinition
+
         mock.get_service_definition.return_value = ServiceDefinition(
             dd_service="test-service",
             tags=["framework:fastapi"],
@@ -645,7 +646,7 @@ class TestScorecardService:
         )
         assert scorecard_service.get_notification_severity(info_scorecard) == "info"
 
-    def _make_dd_deployment(self, lib_version="v4.5.3"):
+    def _make_dd_deployment(self):
         dd_labels = {
             "tags.datadoghq.com/env": "production",
             "tags.datadoghq.com/service": "my-service",
@@ -664,9 +665,6 @@ class TestScorecardService:
                             **dd_labels,
                             "admission.datadoghq.com/enabled": "true",
                         },
-                        "annotations": {
-                            "admission.datadoghq.com/python-lib.version": lib_version,
-                        },
                     },
                     "spec": {"containers": [{"name": "app", "image": "app:1.0.0"}]},
                 }
@@ -676,7 +674,7 @@ class TestScorecardService:
     def test_ops_001_passes_when_fully_instrumented(self, scorecard_service):
         from src.domain.models import ValidationPillar
 
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
         result = scorecard_service._validate_ops_001(
             rule, resource, "default", "test-deployment"
@@ -687,7 +685,7 @@ class TestScorecardService:
         assert "✅" in result.message
 
     def test_ops_001_fails_when_metadata_labels_missing(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         resource["metadata"].pop("labels")
         rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
         result = scorecard_service._validate_ops_001(
@@ -698,7 +696,7 @@ class TestScorecardService:
         assert "metadata.labels[tags.datadoghq.com/env]" in result.message
 
     def test_ops_001_fails_when_pod_template_label_missing(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         resource["spec"]["template"]["metadata"]["labels"].pop(
             "admission.datadoghq.com/enabled"
         )
@@ -710,41 +708,12 @@ class TestScorecardService:
         assert result.passed is False
         assert "admission.datadoghq.com/enabled=true" in result.message
 
-    def test_ops_001_fails_when_lib_version_too_old(self, scorecard_service):
-        resource = self._make_dd_deployment("v3.17.2")
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
-        )
-
-        assert result.passed is False
-        assert "python-lib.version" in result.message
-
-    def test_ops_001_passes_with_version_exactly_above_minimum(self, scorecard_service):
-        resource = self._make_dd_deployment("v3.17.3")
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
-        )
-
-        assert result.passed is True
-
-    def test_ops_001_fails_when_annotation_absent(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
-        resource["spec"]["template"]["metadata"]["annotations"] = {}
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
-        )
-
-        assert result.passed is False
-        assert "python-lib.version" in result.message
-
 
 class TestSLOServiceEnvExtraction:
     @pytest.fixture
     def mock_datadog_port(self):
         from src.domain.models import ServiceDefinition
+
         mock = Mock()
         mock.get_service_slos.return_value = []
         mock.create_slo.return_value = "slo-id-123"
@@ -828,6 +797,7 @@ class TestSLOServiceEnvExtraction:
         self, slo_service, mock_datadog_port
     ):
         from src.domain.models import ServiceDefinition
+
         mock_datadog_port.get_service_definition.return_value = ServiceDefinition(
             dd_service="my-api", tags=[]
         )

@@ -204,6 +204,7 @@ class SLOService:
         resource_uid: Optional[str] = None,
         known_slo_id: Optional[str] = None,
         k8s_annotations: Optional[dict] = None,
+        require_service_in_catalog: bool = True,
     ) -> Dict[str, Any]:
         self.logger.info(
             "Reconciliando SLO",
@@ -218,16 +219,22 @@ class SLOService:
 
         service_def = self.datadog_port.get_service_definition(service)
         if service_def is None:
-            self.logger.warning(
-                "Serviço não encontrado no catálogo Datadog — SLO não será criado",
+            if require_service_in_catalog:
+                self.logger.warning(
+                    "Serviço não encontrado no catálogo Datadog — SLO não será criado",
+                    extra={"service": service, "namespace": namespace},
+                )
+                return {
+                    "success": False,
+                    "action": "skipped_no_datadog_service",
+                    "slo_name": f"slo_uid:{namespace}:{service}",
+                    "error": f"Serviço '{service}' não encontrado no catálogo Datadog",
+                }
+            self.logger.info(
+                "Serviço não encontrado no catálogo Datadog — prosseguindo sem metadados "
+                "(AUTO_SLO_REQUIRE_DATADOG_SERVICE=false)",
                 extra={"service": service, "namespace": namespace},
             )
-            return {
-                "success": False,
-                "action": "skipped_no_datadog_service",
-                "slo_name": f"slo_uid:{namespace}:{service}",
-                "error": f"Serviço '{service}' não encontrado no catálogo Datadog",
-            }
 
         effective_spec = spec
         detection_source = "explicit"

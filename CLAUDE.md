@@ -333,8 +333,8 @@ metadata:
 spec:
   service: "{dd_service}"
   auto_detect_framework: true
-  target: 99.9      # AUTO_SLO_DEFAULT_TARGET
-  warning: 99.0     # AUTO_SLO_DEFAULT_WARNING
+  target: 99.0      # AUTO_SLO_DEFAULT_TARGET
+  warning: 99.5     # AUTO_SLO_DEFAULT_WARNING (deve ser > target)
   timeframe: "30d"  # AUTO_SLO_DEFAULT_TIMEFRAME
   tags: ["env:{dd_env}", "managed_by:titlis_operator"]
 ```

@@ -204,6 +204,7 @@ async def synthetic_monitor_startup(**kwargs: Any) -> None:
 # e chamadores externos que importam run_synthetic_site_check diretamente.
 # ---------------------------------------------------------------------------
 
+
 def run_synthetic_site_check() -> None:
     monitor_name = settings.synthetic_monitor_name
     target_url = settings.synthetic_monitor_url

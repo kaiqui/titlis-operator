@@ -3,7 +3,11 @@ import json
 import time
 import logging
 
-from src.application.ports.titlis_api_port import TitlisApiPort, RemediationState, SLOPendingChange
+from src.application.ports.titlis_api_port import (
+    TitlisApiPort,
+    RemediationState,
+    SLOPendingChange,
+)
 from typing import List, Optional
 
 logger = logging.getLogger(__name__)

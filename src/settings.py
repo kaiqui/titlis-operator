@@ -169,7 +169,8 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="SYNTHETIC_MONITOR_TIMEOUT_SECONDS"
     )
     synthetic_checks_config_path: Optional[str] = Field(
-        default="config/synthetic-checks.yaml", validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH"
+        default="config/synthetic-checks.yaml",
+        validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH",
     )
 
     backstage_url: Optional[str] = Field(default=None, validation_alias="BACKSTAGE_URL")
@@ -198,13 +199,13 @@ class Settings(BaseSettings):
     )
 
     enable_auto_slo_creation: bool = Field(
-        default=False, validation_alias="ENABLE_AUTO_SLO_CREATION"
+        default=True, validation_alias="ENABLE_AUTO_SLO_CREATION"
     )
     auto_slo_default_target: float = Field(
-        default=99.9, validation_alias="AUTO_SLO_DEFAULT_TARGET"
+        default=99.0, validation_alias="AUTO_SLO_DEFAULT_TARGET"
     )
     auto_slo_default_warning: float = Field(
-        default=99.0, validation_alias="AUTO_SLO_DEFAULT_WARNING"
+        default=99.5, validation_alias="AUTO_SLO_DEFAULT_WARNING"
     )
     auto_slo_default_timeframe: str = Field(
         default="30d", validation_alias="AUTO_SLO_DEFAULT_TIMEFRAME"

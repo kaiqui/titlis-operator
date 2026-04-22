@@ -58,14 +58,13 @@ class SLOController(BaseController):
             "error": None,
             "validation_errors": [],
             "datadog_error": None,
-            "spec": None,
             "event_type": event_type,
         }
+        spec: Optional[SLOConfigSpec] = None
 
         try:
             spec_dict = body.get("spec", {}) or {}
             spec = SLOConfigSpec(**spec_dict)
-            result["spec"] = spec
 
             validation_passed = True
 
@@ -125,7 +124,11 @@ class SLOController(BaseController):
                     context,
                 )
                 await self._send_complete_slo_notification(
-                    body=body, result=result, event_type=event_type, context=context
+                    body=body,
+                    result=result,
+                    spec=spec,
+                    event_type=event_type,
+                    context=context,
                 )
 
                 # ── Métrica: erro de validação ──────────────────────────────
@@ -151,6 +154,8 @@ class SLOController(BaseController):
 
                 if not self.slo_service:
                     raise RuntimeError("SLOService não disponível")
+                from src.settings import settings as _settings
+
                 reconciliation_result = (
                     self.slo_service.reconcile_slo(
                         namespace=resource_namespace,
@@ -159,6 +164,7 @@ class SLOController(BaseController):
                         resource_uid=resource_uid,
                         known_slo_id=known_slo_id,
                         k8s_annotations=k8s_annotations,
+                        require_service_in_catalog=_settings.auto_slo_require_datadog_service,
                     )
                     or {}
                 )
@@ -198,9 +204,11 @@ class SLOController(BaseController):
                 "slo_id": result["slo_id"],
                 "state": "ok" if result["success"] else "error",
                 "last_sync": datetime.now(timezone.utc).isoformat(),
-                "error": None
-                if result["success"]
-                else (result["datadog_error"] or "Erro desconhecido"),
+                "error": (
+                    None
+                    if result["success"]
+                    else (result["datadog_error"] or "Erro desconhecido")
+                ),
                 "detected_framework": result.get("reconciliation_result", {}).get(
                     "detected_framework"
                 ),
@@ -220,9 +228,9 @@ class SLOController(BaseController):
                 extra={
                     **context,
                     "validation_error": str(ve),
-                    "validation_details": ve.errors()
-                    if hasattr(ve, "errors")
-                    else None,
+                    "validation_details": (
+                        ve.errors() if hasattr(ve, "errors") else None
+                    ),
                 },
             )
             result.update(
@@ -233,7 +241,7 @@ class SLOController(BaseController):
             # ── Métrica: erro de schema ──────────────────────────────────
             self._emit_reconciliation_metric(
                 result=result,
-                spec=result.get("spec"),
+                spec=spec,
                 namespace=resource_namespace,
                 error_kind=SLOErrorKind.VALIDATION,
             )
@@ -254,14 +262,14 @@ class SLOController(BaseController):
             # ── Métrica: erro inesperado ─────────────────────────────────
             self._emit_reconciliation_metric(
                 result=result,
-                spec=result.get("spec"),
+                spec=spec,
                 namespace=resource_namespace,
                 error_kind=SLOErrorKind.UNEXPECTED,
             )
 
         # Notificação Slack (comportamento original mantido)
         await self._send_complete_slo_notification(
-            body=body, result=result, event_type=event_type, context=context
+            body=body, result=result, spec=spec, event_type=event_type, context=context
         )
 
         # ── Métrica: resultado final ───────────────────────────────────────
@@ -282,16 +290,17 @@ class SLOController(BaseController):
         )
 
         # ── Compliance / adesão ───────────────────────────────────────────
-        if result.get("spec") and self.metrics:
+        if spec and self.metrics:
             self.metrics.record_compliance_status(
                 is_compliant=result["success"],
-                slo_type=result["spec"].type.value if result.get("spec") else "unknown",
+                slo_type=spec.type.value,
                 namespace=resource_namespace,
             )
 
         await self._send_titlis_api_event(
             body=body,
             result=result,
+            spec=spec,
             resource_namespace=resource_namespace,
             resource_uid=resource_uid,
         )
@@ -301,18 +310,18 @@ class SLOController(BaseController):
             "action": result["action"],
             "slo_id": result["slo_id"],
             "error": result["error"] or result["datadog_error"],
-            "service": result["spec"].service if result["spec"] else None,
+            "service": spec.service if spec else None,
         }
 
     async def _send_titlis_api_event(
         self,
         body: Dict[str, Any],
         result: Dict[str, Any],
+        spec: Optional[SLOConfigSpec],
         resource_namespace: str,
         resource_uid: Optional[str],
     ) -> None:
         titlis_client = get_titlis_api_client()
-        spec = result.get("spec")
         if not titlis_client or not spec:
             return
 
@@ -341,9 +350,9 @@ class SLOController(BaseController):
                     ),
                     "detection_source": reconciliation_result.get("detection_source"),
                     "k8s_resource_uid": resource_uid,
-                    "app_framework": spec.app_framework.value.upper()
-                    if spec.app_framework
-                    else None,
+                    "app_framework": (
+                        spec.app_framework.value.upper() if spec.app_framework else None
+                    ),
                 }
             )
         except Exception:
@@ -363,12 +372,12 @@ class SLOController(BaseController):
         self,
         body: Dict[str, Any],
         result: Dict[str, Any],
+        spec: Optional[SLOConfigSpec],
         event_type: str,
         context: Dict[str, Any],
     ) -> None:
         resource_name = context["resource_name"]
         resource_namespace = context["resource_namespace"]
-        spec = result.get("spec")
 
         # Determina severidade geral
         severity = self._determine_slo_severity(result)

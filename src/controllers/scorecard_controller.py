@@ -93,7 +93,9 @@ class ScorecardController(BaseController):
                 dd_labels = self._extract_dd_labels(body)
                 if dd_labels and self._ops001_passed(scorecard):
                     dd_service, dd_env = dd_labels
-                    await self._maybe_auto_create_slo(body, namespace, dd_service, dd_env)
+                    await self._maybe_auto_create_slo(
+                        body, namespace, dd_service, dd_env
+                    )
 
             should_notify = self.scorecard_service.should_notify(scorecard)
             if should_notify:
@@ -159,9 +161,11 @@ class ScorecardController(BaseController):
                                     ].rule_type.value.upper(),
                                     "weight": validation.weight,
                                     "message": validation.message,
-                                    "actual_value": None
-                                    if validation.actual_value is None
-                                    else str(validation.actual_value),
+                                    "actual_value": (
+                                        None
+                                        if validation.actual_value is None
+                                        else str(validation.actual_value)
+                                    ),
                                     "is_remediable": bool(validation.remediation),
                                     "remediation_category": self._remediation_category(
                                         validation.rule_id
@@ -239,6 +243,7 @@ class ScorecardController(BaseController):
     @staticmethod
     def _ops001_passed(scorecard: ResourceScorecard) -> bool:
         from src.domain.models import ValidationPillar
+
         pillar_score = scorecard.pillar_scores.get(ValidationPillar.OPERATIONAL)
         if pillar_score is None:
             return False
@@ -282,9 +287,51 @@ class ScorecardController(BaseController):
         except Exception:
             self.logger.exception(
                 "Erro ao criar SLOConfig CRD",
-                extra={"crd_name": body.get("metadata", {}).get("name"), "namespace": namespace},
+                extra={
+                    "crd_name": body.get("metadata", {}).get("name"),
+                    "namespace": namespace,
+                },
             )
             return False
+
+    def _touch_sloconfig(
+        self, existing: Dict[str, Any], namespace: str, deployment_rv: str
+    ) -> None:
+        name = existing.get("metadata", {}).get("name", "")
+        current_rv = (
+            existing.get("metadata", {})
+            .get("annotations", {})
+            .get("titlis.io/last-deployment-rv", "")
+        )
+        if current_rv == deployment_rv:
+            return
+        try:
+            _, _, custom = get_k8s_apis()
+            custom.patch_namespaced_custom_object(
+                group="titlis.io",
+                version="v1",
+                namespace=namespace,
+                plural="sloconfigs",
+                name=name,
+                body={
+                    "metadata": {
+                        "annotations": {"titlis.io/last-deployment-rv": deployment_rv}
+                    }
+                },
+            )
+            self.logger.debug(
+                "SLOConfig tocado para forçar reconciliação",
+                extra={
+                    "name": name,
+                    "namespace": namespace,
+                    "deployment_rv": deployment_rv,
+                },
+            )
+        except Exception:
+            self.logger.exception(
+                "Erro ao tocar SLOConfig",
+                extra={"name": name, "namespace": namespace},
+            )
 
     async def _maybe_auto_create_slo(
         self,
@@ -299,10 +346,8 @@ class ScorecardController(BaseController):
 
         existing = self._find_sloconfig_by_source_uid(deployment_uid, namespace)
         if existing:
-            self.logger.debug(
-                "SLOConfig já existe para este deployment — skip",
-                extra={"deployment_uid": deployment_uid, "namespace": namespace},
-            )
+            deployment_rv = body.get("metadata", {}).get("resourceVersion", "")
+            self._touch_sloconfig(existing, namespace, deployment_rv)
             return
 
         slo_config_body: Dict[str, Any] = {

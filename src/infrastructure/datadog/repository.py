@@ -138,9 +138,11 @@ class DatadogRepository(DatadogPort):
                     # Fallback: construir threshold correto
                     threshold_data = {
                         "timeframe": slo.timeframe.value,
-                        "target": float(slo.target_threshold)
-                        if slo.target_threshold
-                        else 99.9,
+                        "target": (
+                            float(slo.target_threshold)
+                            if slo.target_threshold
+                            else 99.9
+                        ),
                     }
 
                     if hasattr(slo, "warning_threshold") and slo.warning_threshold:
@@ -167,12 +169,12 @@ class DatadogRepository(DatadogPort):
                     type=slo.slo_type.value,
                     thresholds=thresholds,  # Usar thresholds construídos
                     timeframe=slo.timeframe.value,
-                    target_threshold=float(slo.target_threshold)
-                    if slo.target_threshold
-                    else None,
-                    warning_threshold=float(slo.warning_threshold)
-                    if slo.warning_threshold
-                    else None,
+                    target_threshold=(
+                        float(slo.target_threshold) if slo.target_threshold else None
+                    ),
+                    warning_threshold=(
+                        float(slo.warning_threshold) if slo.warning_threshold else None
+                    ),
                     tags=slo.tags,
                     description=slo.description or "",
                     query=slo.query,
@@ -200,12 +202,14 @@ class DatadogRepository(DatadogPort):
                         "type": slo.slo_type.value,
                         "target_threshold": getattr(slo, "target_threshold", "N/A"),
                         "warning_threshold": getattr(slo, "warning_threshold", "N/A"),
-                        "timeframe": getattr(slo.timeframe, "value", "N/A")
-                        if hasattr(slo, "timeframe")
-                        else "N/A",
-                        "thresholds": str(slo.thresholds)
-                        if hasattr(slo, "thresholds")
-                        else "N/A",
+                        "timeframe": (
+                            getattr(slo.timeframe, "value", "N/A")
+                            if hasattr(slo, "timeframe")
+                            else "N/A"
+                        ),
+                        "thresholds": (
+                            str(slo.thresholds) if hasattr(slo, "thresholds") else "N/A"
+                        ),
                     },
                 },
             )
@@ -226,9 +230,9 @@ class DatadogRepository(DatadogPort):
                 # Construir threshold se não existir
                 threshold_data = {
                     "timeframe": slo.timeframe.value,
-                    "target": float(slo.target_threshold)
-                    if slo.target_threshold
-                    else 99.9,
+                    "target": (
+                        float(slo.target_threshold) if slo.target_threshold else 99.9
+                    ),
                 }
                 if hasattr(slo, "warning_threshold") and slo.warning_threshold:
                     threshold_data["warning"] = float(slo.warning_threshold)

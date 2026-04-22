@@ -20,9 +20,7 @@ async def slo_pending_changes_startup(**kwargs: Any) -> None:
         )
         return
 
-    asyncio.create_task(
-        _pending_changes_loop(), name="slo-pending-changes-loop"
-    )
+    asyncio.create_task(_pending_changes_loop(), name="slo-pending-changes-loop")
 
     logger.info(
         "SLO pending changes loop iniciado",

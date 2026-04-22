@@ -49,6 +49,7 @@ class TestSettings:
     )
     def test_titlis_api_key_env_var(self):
         from src.settings import TitlisApiSettings
+
         s = TitlisApiSettings()
         assert s.enabled is True
         assert s.api_key is not None
@@ -58,5 +59,6 @@ class TestSettings:
     def test_titlis_api_fails_fast_when_enabled_without_key(self):
         from pydantic import ValidationError
         from src.settings import TitlisApiSettings
+
         with pytest.raises((ValidationError, ValueError)):
             TitlisApiSettings()

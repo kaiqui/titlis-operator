@@ -45,9 +45,7 @@ class GaugeMetricSender:
         )
         try:
             with ApiClient(self.configuration) as api_client:
-                MetricsApi(api_client).submit_metrics(
-                    body=MetricPayload(series=series)
-                )
+                MetricsApi(api_client).submit_metrics(body=MetricPayload(series=series))
             return True
         except Exception:
             self.logger.exception(

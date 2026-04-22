@@ -94,9 +94,9 @@ class SLOManager(DatadogClientBase):
                 extra={
                     "thresholds": thresholds,
                     "thresholds_count": len(thresholds),
-                    "first_threshold_keys": list(thresholds[0].keys())
-                    if thresholds
-                    else [],
+                    "first_threshold_keys": (
+                        list(thresholds[0].keys()) if thresholds else []
+                    ),
                 },
             )
 
@@ -161,9 +161,9 @@ class SLOManager(DatadogClientBase):
                 "Resposta da API do Datadog",
                 extra={
                     "response_type": builtins_type(response).__name__,
-                    "response_attrs": dir(response)[:20]
-                    if hasattr(response, "__dir__")
-                    else [],
+                    "response_attrs": (
+                        dir(response)[:20] if hasattr(response, "__dir__") else []
+                    ),
                     "response_str": str(response)[:1000],
                 },
             )
@@ -180,9 +180,11 @@ class SLOManager(DatadogClientBase):
                 "success": True,
                 "slo_id": slo_id,
                 "slo_name": name,
-                "response": response.to_dict()
-                if hasattr(response, "to_dict")
-                else str(response),
+                "response": (
+                    response.to_dict()
+                    if hasattr(response, "to_dict")
+                    else str(response)
+                ),
                 "raw_response": str(response),
             }
 
@@ -191,9 +193,9 @@ class SLOManager(DatadogClientBase):
                 "Erro ao criar SLO",
                 extra={
                     "slo_name": name,
-                    "thresholds": str(thresholds)
-                    if "thresholds" in locals()
-                    else "N/A",
+                    "thresholds": (
+                        str(thresholds) if "thresholds" in locals() else "N/A"
+                    ),
                     # "thresholds_type": type(thresholds).__name__ if 'thresholds' in locals() else "N/A"
                 },
             )
@@ -287,9 +289,11 @@ class SLOManager(DatadogClientBase):
                 "success": True,
                 "slo_id": slo_id,
                 "slo_name": name,
-                "response": response.to_dict()
-                if hasattr(response, "to_dict")
-                else str(response),
+                "response": (
+                    response.to_dict()
+                    if hasattr(response, "to_dict")
+                    else str(response)
+                ),
             }
 
         except Exception:
@@ -409,9 +413,11 @@ class SLOManager(DatadogClientBase):
             return {
                 "success": True,
                 "slo_id": updated_id,
-                "response": response.to_dict()
-                if hasattr(response, "to_dict")
-                else str(response),
+                "response": (
+                    response.to_dict()
+                    if hasattr(response, "to_dict")
+                    else str(response)
+                ),
             }
 
         except Exception as error:
@@ -527,9 +533,11 @@ class SLOManager(DatadogClientBase):
             return {
                 "success": True,
                 "slo_id": slo_id,
-                "response": response.to_dict()
-                if hasattr(response, "to_dict")
-                else str(response),
+                "response": (
+                    response.to_dict()
+                    if hasattr(response, "to_dict")
+                    else str(response)
+                ),
             }
 
         except Exception:
@@ -605,9 +613,9 @@ class SLOManager(DatadogClientBase):
                 f"Erro ao extrair SLO ID: ",
                 extra={
                     "response_type": type(response).__name__,
-                    "response_attrs": dir(response)[:10]
-                    if hasattr(response, "__dir__")
-                    else [],
+                    "response_attrs": (
+                        dir(response)[:10] if hasattr(response, "__dir__") else []
+                    ),
                 },
             )
 

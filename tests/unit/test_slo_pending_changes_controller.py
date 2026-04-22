@@ -17,6 +17,7 @@ def _make_pending_change(
     requested_by="titlis-ai",
 ):
     from src.application.ports.titlis_api_port import SLOPendingChange
+
     return SLOPendingChange(
         id=change_id,
         slo_config_name=slo_config_name,
@@ -31,16 +32,19 @@ def _make_pending_change(
 class TestCoerceFieldValue:
     def test_target_coerced_to_float(self):
         from src.controllers.slo_pending_changes_controller import _coerce_field_value
+
         assert _coerce_field_value("target", "99.5") == 99.5
         assert isinstance(_coerce_field_value("target", "99.5"), float)
 
     def test_warning_coerced_to_float(self):
         from src.controllers.slo_pending_changes_controller import _coerce_field_value
+
         assert _coerce_field_value("warning", "99.0") == 99.0
         assert isinstance(_coerce_field_value("warning", "99.0"), float)
 
     def test_timeframe_kept_as_string(self):
         from src.controllers.slo_pending_changes_controller import _coerce_field_value
+
         assert _coerce_field_value("timeframe", "7d") == "7d"
         assert isinstance(_coerce_field_value("timeframe", "7d"), str)
 
@@ -55,7 +59,10 @@ class TestApplyPendingChanges:
             "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
             return_value=mock_client,
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
         mock_client.get_pending_slo_changes.assert_called_once()
@@ -68,7 +75,10 @@ class TestApplyPendingChanges:
             "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
             return_value=None,
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
     @pytest.mark.asyncio
@@ -81,14 +91,20 @@ class TestApplyPendingChanges:
         mock_custom = Mock()
         mock_custom.patch_namespaced_custom_object.return_value = {}
 
-        with patch(
-            "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
-            return_value=mock_client,
-        ), patch(
-            "src.controllers.slo_pending_changes_controller.get_k8s_apis",
-            return_value=(Mock(), Mock(), mock_custom),
+        with (
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_k8s_apis",
+                return_value=(Mock(), Mock(), mock_custom),
+            ),
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
         mock_custom.patch_namespaced_custom_object.assert_called_once_with(
@@ -99,7 +115,9 @@ class TestApplyPendingChanges:
             name="auto-my-api",
             body={"spec": {"target": 99.5}},
         )
-        mock_client.confirm_slo_change_applied.assert_called_once_with("change-uuid-001")
+        mock_client.confirm_slo_change_applied.assert_called_once_with(
+            "change-uuid-001"
+        )
         mock_client.confirm_slo_change_failed.assert_not_called()
 
     @pytest.mark.asyncio
@@ -119,14 +137,20 @@ class TestApplyPendingChanges:
         mock_custom = Mock()
         mock_custom.patch_namespaced_custom_object.return_value = {}
 
-        with patch(
-            "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
-            return_value=mock_client,
-        ), patch(
-            "src.controllers.slo_pending_changes_controller.get_k8s_apis",
-            return_value=(Mock(), Mock(), mock_custom),
+        with (
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_k8s_apis",
+                return_value=(Mock(), Mock(), mock_custom),
+            ),
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
         call_body = mock_custom.patch_namespaced_custom_object.call_args[1]["body"]
@@ -139,14 +163,20 @@ class TestApplyPendingChanges:
         mock_client.get_pending_slo_changes = AsyncMock(return_value=[change])
         mock_client.confirm_slo_change_failed = AsyncMock(return_value=True)
 
-        with patch(
-            "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
-            return_value=mock_client,
-        ), patch(
-            "src.controllers.slo_pending_changes_controller.get_k8s_apis",
-            side_effect=Exception("CRD not found"),
+        with (
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_k8s_apis",
+                side_effect=Exception("CRD not found"),
+            ),
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
         mock_client.confirm_slo_change_applied.assert_not_called()
@@ -157,8 +187,18 @@ class TestApplyPendingChanges:
     @pytest.mark.asyncio
     async def test_applies_multiple_changes_independently(self):
         changes = [
-            _make_pending_change(change_id="c-1", slo_config_name="svc-a", field="target", new_value="99.0"),
-            _make_pending_change(change_id="c-2", slo_config_name="svc-b", field="warning", new_value="98.5"),
+            _make_pending_change(
+                change_id="c-1",
+                slo_config_name="svc-a",
+                field="target",
+                new_value="99.0",
+            ),
+            _make_pending_change(
+                change_id="c-2",
+                slo_config_name="svc-b",
+                field="warning",
+                new_value="98.5",
+            ),
         ]
         mock_client = AsyncMock()
         mock_client.get_pending_slo_changes = AsyncMock(return_value=changes)
@@ -167,19 +207,27 @@ class TestApplyPendingChanges:
         mock_custom = Mock()
         mock_custom.patch_namespaced_custom_object.return_value = {}
 
-        with patch(
-            "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
-            return_value=mock_client,
-        ), patch(
-            "src.controllers.slo_pending_changes_controller.get_k8s_apis",
-            return_value=(Mock(), Mock(), mock_custom),
+        with (
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_k8s_apis",
+                return_value=(Mock(), Mock(), mock_custom),
+            ),
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
         assert mock_custom.patch_namespaced_custom_object.call_count == 2
         assert mock_client.confirm_slo_change_applied.call_count == 2
-        applied_ids = {c[0][0] for c in mock_client.confirm_slo_change_applied.call_args_list}
+        applied_ids = {
+            c[0][0] for c in mock_client.confirm_slo_change_applied.call_args_list
+        }
         assert applied_ids == {"c-1", "c-2"}
 
     @pytest.mark.asyncio
@@ -202,17 +250,25 @@ class TestApplyPendingChanges:
 
         mock_custom.patch_namespaced_custom_object.side_effect = patch_side_effect
 
-        with patch(
-            "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
-            return_value=mock_client,
-        ), patch(
-            "src.controllers.slo_pending_changes_controller.get_k8s_apis",
-            return_value=(Mock(), Mock(), mock_custom),
+        with (
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_titlis_api_client",
+                return_value=mock_client,
+            ),
+            patch(
+                "src.controllers.slo_pending_changes_controller.get_k8s_apis",
+                return_value=(Mock(), Mock(), mock_custom),
+            ),
         ):
-            from src.controllers.slo_pending_changes_controller import apply_pending_slo_changes
+            from src.controllers.slo_pending_changes_controller import (
+                apply_pending_slo_changes,
+            )
+
             await apply_pending_slo_changes()
 
-        mock_client.confirm_slo_change_failed.assert_called_once_with("c-fail", "not found")
+        mock_client.confirm_slo_change_failed.assert_called_once_with(
+            "c-fail", "not found"
+        )
         mock_client.confirm_slo_change_applied.assert_called_once_with("c-ok")
 
 

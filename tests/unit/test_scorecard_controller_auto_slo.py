@@ -24,14 +24,16 @@ def _make_deployment_body(
             "admission.datadoghq.com/enabled": "true",
         }
     return {
-        "metadata": {"name": name, "namespace": namespace, "uid": uid},
+        "metadata": {
+            "name": name,
+            "namespace": namespace,
+            "uid": uid,
+            "resourceVersion": "rv-001",
+        },
         "spec": {
             "template": {
                 "metadata": {
                     "labels": pod_labels,
-                    "annotations": {
-                        "admission.datadoghq.com/python-lib.version": "v3.17.3"
-                    },
                 }
             }
         },
@@ -175,15 +177,20 @@ class TestOps001Passed:
 
 class TestFindSloConfigBySourceUid:
     def _make_controller(self):
-        with patch("src.controllers.base.get_status_writer") as mw, \
-             patch("src.controllers.base.get_slack_service") as ms, \
-             patch("src.controllers.scorecard_controller.get_scorecard_service") as msc, \
-             patch("src.controllers.scorecard_controller.get_appscorecard_writer") as maw:
+        with (
+            patch("src.controllers.base.get_status_writer") as mw,
+            patch("src.controllers.base.get_slack_service") as ms,
+            patch("src.controllers.scorecard_controller.get_scorecard_service") as msc,
+            patch(
+                "src.controllers.scorecard_controller.get_appscorecard_writer"
+            ) as maw,
+        ):
             mw.return_value = Mock()
             ms.return_value = None
             msc.return_value = Mock()
             maw.return_value = None
             from src.controllers.scorecard_controller import ScorecardController
+
             return ScorecardController()
 
     def test_returns_none_when_no_sloconfig_exists(self):
@@ -234,41 +241,50 @@ class TestFindSloConfigBySourceUid:
 
 class TestMaybeAutoCreateSlo:
     def _make_controller(self):
-        with patch("src.controllers.base.get_status_writer") as mw, \
-             patch("src.controllers.base.get_slack_service") as ms, \
-             patch("src.controllers.scorecard_controller.get_scorecard_service") as msc, \
-             patch("src.controllers.scorecard_controller.get_appscorecard_writer") as maw:
+        with (
+            patch("src.controllers.base.get_status_writer") as mw,
+            patch("src.controllers.base.get_slack_service") as ms,
+            patch("src.controllers.scorecard_controller.get_scorecard_service") as msc,
+            patch(
+                "src.controllers.scorecard_controller.get_appscorecard_writer"
+            ) as maw,
+        ):
             mw.return_value = Mock()
             ms.return_value = None
             msc.return_value = Mock()
             maw.return_value = None
             from src.controllers.scorecard_controller import ScorecardController
+
             return ScorecardController()
 
     @pytest.mark.asyncio
-    async def test_skips_when_sloconfig_already_exists(self):
+    async def test_touches_existing_sloconfig_on_deployment_update(self):
         ctrl = self._make_controller()
         body = _make_deployment_body()
-        existing = {"metadata": {"name": "auto-my-api"}}
+        existing = {"metadata": {"name": "auto-my-api", "annotations": {}}}
 
-        with patch.object(
-            ctrl, "_find_sloconfig_by_source_uid", return_value=existing
-        ) as mock_find, patch.object(
-            ctrl, "_apply_sloconfig"
-        ) as mock_apply:
+        with (
+            patch.object(
+                ctrl, "_find_sloconfig_by_source_uid", return_value=existing
+            ) as mock_find,
+            patch.object(ctrl, "_apply_sloconfig") as mock_apply,
+            patch.object(ctrl, "_touch_sloconfig") as mock_touch,
+        ):
             await ctrl._maybe_auto_create_slo(body, "default", "my-api", "production")
 
         mock_find.assert_called_once_with("uid-abc-123", "default")
         mock_apply.assert_not_called()
+        mock_touch.assert_called_once_with(existing, "default", "rv-001")
 
     @pytest.mark.asyncio
     async def test_creates_sloconfig_when_none_exists(self):
         ctrl = self._make_controller()
         body = _make_deployment_body()
 
-        with patch.object(
-            ctrl, "_find_sloconfig_by_source_uid", return_value=None
-        ), patch.object(ctrl, "_apply_sloconfig", return_value=True) as mock_apply:
+        with (
+            patch.object(ctrl, "_find_sloconfig_by_source_uid", return_value=None),
+            patch.object(ctrl, "_apply_sloconfig", return_value=True) as mock_apply,
+        ):
             await ctrl._maybe_auto_create_slo(body, "default", "my-api", "production")
 
         mock_apply.assert_called_once()
@@ -291,14 +307,16 @@ class TestMaybeAutoCreateSlo:
             captured["body"] = body_arg
             return True
 
-        with patch.object(ctrl, "_find_sloconfig_by_source_uid", return_value=None), \
-             patch.object(ctrl, "_apply_sloconfig", side_effect=capture_apply):
+        with (
+            patch.object(ctrl, "_find_sloconfig_by_source_uid", return_value=None),
+            patch.object(ctrl, "_apply_sloconfig", side_effect=capture_apply),
+        ):
             await ctrl._maybe_auto_create_slo(body, "default", "my-api", "staging")
 
         spec = captured["body"]["spec"]
         assert spec["auto_detect_framework"] is True
-        assert spec["target"] == 99.9
-        assert spec["warning"] == 99.0
+        assert spec["target"] == 99.0
+        assert spec["warning"] == 99.5
         assert spec["timeframe"] == "30d"
         assert "env:staging" in spec["tags"]
         assert "managed_by:titlis_operator" in spec["tags"]
@@ -308,8 +326,10 @@ class TestMaybeAutoCreateSlo:
         ctrl = self._make_controller()
         body = {"metadata": {"name": "app", "namespace": "default"}}
 
-        with patch.object(ctrl, "_find_sloconfig_by_source_uid") as mock_find, \
-             patch.object(ctrl, "_apply_sloconfig") as mock_apply:
+        with (
+            patch.object(ctrl, "_find_sloconfig_by_source_uid") as mock_find,
+            patch.object(ctrl, "_apply_sloconfig") as mock_apply,
+        ):
             await ctrl._maybe_auto_create_slo(body, "default", "my-api", "production")
 
         mock_find.assert_not_called()
