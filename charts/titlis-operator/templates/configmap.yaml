@@ -29,6 +29,12 @@ data:
   ENABLE_SCORECARD_CONTROLLER: "{{ default true .Values.controllers.scorecardEnabled }}"
   ENABLE_SLO_CONTROLLER: "{{ default true .Values.controllers.sloEnabled }}"
   ENABLE_AUTO_REMEDIATION: "{{ default true .Values.controllers.autoRemediationEnabled }}"
+  ENABLE_AUTO_SLO_CREATION: "{{ default false .Values.controllers.autoSloCreationEnabled }}"
+  AUTO_SLO_DEFAULT_TARGET: "{{ default "99.9" .Values.controllers.autoSloDefaultTarget }}"
+  AUTO_SLO_DEFAULT_WARNING: "{{ default "99.0" .Values.controllers.autoSloDefaultWarning }}"
+  AUTO_SLO_DEFAULT_TIMEFRAME: "{{ default "30d" .Values.controllers.autoSloDefaultTimeframe }}"
+  AUTO_SLO_REQUIRE_DATADOG_SERVICE: "{{ default "true" .Values.controllers.autoSloRequireDatadogService }}"
+  AUTO_SLO_PENDING_CHANGES_POLL_INTERVAL_SECONDS: "{{ default "30" .Values.controllers.autoSloPendingChangesPollIntervalSeconds }}"
 
   # CAST AI Monitor
   ENABLE_CASTAI_MONITOR: "{{ default false .Values.castai.monitorEnabled }}"
@@ -62,6 +68,7 @@ data:
   TITLIS_API_HOST: "{{ default "titlis-api.titlis-system.svc.cluster.local" .Values.titlisApi.host }}"
   TITLIS_API_UDP_PORT: "{{ default 8125 .Values.titlisApi.udpPort }}"
   TITLIS_API_HTTP_PORT: "{{ default 8080 .Values.titlisApi.httpPort }}"
+  TITLIS_API_SCHEME: "{{ default "http" .Values.titlisApi.scheme }}"
 
   # Datadog
   DD_SITE: "{{ default "datadoghq.com" .Values.datadog.site }}"

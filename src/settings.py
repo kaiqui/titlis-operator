@@ -11,6 +11,7 @@ class TitlisApiSettings(BaseSettings):
     host: str = Field(default="titlis-api.titlis-system.svc.cluster.local")
     udp_port: int = Field(default=8125)
     http_port: int = Field(default=8080)
+    scheme: str = Field(default="http")
     api_key: Optional[SecretStr] = Field(default=None)
 
     @model_validator(mode="after")
@@ -24,7 +25,7 @@ class TitlisApiSettings(BaseSettings):
 
     @property
     def http_base_url(self) -> str:
-        return f"http://{self.host}:{self.http_port}"
+        return f"{self.scheme}://{self.host}:{self.http_port}"
 
 
 class SlackSettings(BaseSettings):
@@ -94,106 +95,9 @@ class SlackSettings(BaseSettings):
     )
 
 
-class GitHubSettings(BaseSettings):
-    enabled: bool = Field(default=False, validation_alias="GITHUB_ENABLED")
-    token: Optional[SecretStr] = Field(default=None, validation_alias="GITHUB_TOKEN")
-    base_branch: str = Field(default="develop", validation_alias="GITHUB_BASE_BRANCH")
-    timeout_seconds: float = Field(
-        default=30.0, validation_alias="GITHUB_TIMEOUT_SECONDS"
-    )
-
-    model_config = SettingsConfigDict(
-        env_prefix="GITHUB_",
-        case_sensitive=False,
-        extra="ignore",
-    )
-
-
-class RemediationSettings(BaseSettings):
-    default_cpu_request: str = Field(
-        default="100m", validation_alias="REMEDIATION_DEFAULT_CPU_REQUEST"
-    )
-    default_cpu_limit: str = Field(
-        default="500m", validation_alias="REMEDIATION_DEFAULT_CPU_LIMIT"
-    )
-    default_memory_request: str = Field(
-        default="128Mi", validation_alias="REMEDIATION_DEFAULT_MEMORY_REQUEST"
-    )
-    default_memory_limit: str = Field(
-        default="512Mi", validation_alias="REMEDIATION_DEFAULT_MEMORY_LIMIT"
-    )
-    hpa_min_replicas: int = Field(
-        default=2, validation_alias="REMEDIATION_HPA_MIN_REPLICAS"
-    )
-    hpa_max_replicas: int = Field(
-        default=10, validation_alias="REMEDIATION_HPA_MAX_REPLICAS"
-    )
-    hpa_cpu_utilization: int = Field(
-        default=70, validation_alias="REMEDIATION_HPA_CPU_UTILIZATION"
-    )
-    hpa_memory_utilization: int = Field(
-        default=80, validation_alias="REMEDIATION_HPA_MEMORY_UTILIZATION"
-    )
-
-    # Feature flags para ações de remediação
-    enable_remediation_resources: bool = Field(
-        default=False, validation_alias="ENABLE_REMEDIATION_RESOURCES"
-    )
-    enable_remediation_hpa: bool = Field(
-        default=True, validation_alias="ENABLE_REMEDIATION_HPA"
-    )
-
-    # Perfis de HPA
-    hpa_profile_default: str = Field(
-        default="light", validation_alias="REMEDIATION_HPA_PROFILE_DEFAULT"
-    )
-    hpa_profile_critical: str = Field(
-        default="rigid", validation_alias="REMEDIATION_HPA_PROFILE_CRITICAL"
-    )
-
-    # Detecção de criticidade via Datadog
-    hpa_critical_threshold_rpm: int = Field(
-        default=100000, validation_alias="REMEDIATION_HPA_CRITICAL_THRESHOLD_RPM"
-    )
-
-    # Behavior de scaleUp
-    hpa_behavior_scale_up_stabilization: int = Field(
-        default=0, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_UP_STABILIZATION"
-    )
-    hpa_behavior_scale_up_pods: int = Field(
-        default=4, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_UP_PODS"
-    )
-    hpa_behavior_scale_up_percent: int = Field(
-        default=100, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_UP_PERCENT"
-    )
-    hpa_behavior_scale_up_period: int = Field(
-        default=15, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_UP_PERIOD"
-    )
-
-    # Behavior de scaleDown
-    hpa_behavior_scale_down_stabilization: int = Field(
-        default=300,
-        validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_STABILIZATION",
-    )
-    hpa_behavior_scale_down_pods: int = Field(
-        default=1, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_PODS"
-    )
-    hpa_behavior_scale_down_period: int = Field(
-        default=60, validation_alias="REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_PERIOD"
-    )
-
-    model_config = SettingsConfigDict(
-        env_prefix="REMEDIATION_",
-        case_sensitive=False,
-        extra="ignore",
-    )
-
-
 class Settings(BaseSettings):
     titlis_api: TitlisApiSettings = Field(default_factory=TitlisApiSettings)
     slack: SlackSettings = Field(default_factory=SlackSettings)
-    github: GitHubSettings = Field(default_factory=GitHubSettings)
-    remediation: RemediationSettings = Field(default_factory=RemediationSettings)
 
     kubernetes_namespace: str = Field(
         default="titlis-system", validation_alias="KUBERNETES_NAMESPACE"
@@ -265,7 +169,8 @@ class Settings(BaseSettings):
         default=10.0, validation_alias="SYNTHETIC_MONITOR_TIMEOUT_SECONDS"
     )
     synthetic_checks_config_path: Optional[str] = Field(
-        default="config/synthetic-checks.yaml", validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH"
+        default="config/synthetic-checks.yaml",
+        validation_alias="SYNTHETIC_CHECKS_CONFIG_PATH",
     )
 
     backstage_url: Optional[str] = Field(default=None, validation_alias="BACKSTAGE_URL")
@@ -293,8 +198,23 @@ class Settings(BaseSettings):
         default=False, validation_alias="ENABLE_CASTAI_COST_ENRICHMENT"
     )
 
-    enable_auto_remediation: bool = Field(
-        default=True, validation_alias="ENABLE_AUTO_REMEDIATION"
+    enable_auto_slo_creation: bool = Field(
+        default=True, validation_alias="ENABLE_AUTO_SLO_CREATION"
+    )
+    auto_slo_default_target: float = Field(
+        default=99.0, validation_alias="AUTO_SLO_DEFAULT_TARGET"
+    )
+    auto_slo_default_warning: float = Field(
+        default=99.5, validation_alias="AUTO_SLO_DEFAULT_WARNING"
+    )
+    auto_slo_default_timeframe: str = Field(
+        default="30d", validation_alias="AUTO_SLO_DEFAULT_TIMEFRAME"
+    )
+    auto_slo_require_datadog_service: bool = Field(
+        default=True, validation_alias="AUTO_SLO_REQUIRE_DATADOG_SERVICE"
+    )
+    auto_slo_pending_changes_poll_interval_seconds: int = Field(
+        default=30, validation_alias="AUTO_SLO_PENDING_CHANGES_POLL_INTERVAL_SECONDS"
     )
 
     model_config = SettingsConfigDict(

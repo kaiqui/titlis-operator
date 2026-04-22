@@ -40,7 +40,6 @@ def startup(settings_: "kopf.OperatorSettings | None" = None, **kwargs: Any) -> 
 
         if settings.enable_slo_controller:
             get_slo_service()
-            get_datadog_repository()
 
         if settings.enable_scorecard_controller:
             scorecard_service = get_scorecard_service()
@@ -130,6 +129,10 @@ async def cleanup(**kwargs: Any) -> None:
 
     logger.info("Titlis Operator finalizado")
 
+
+if settings.titlis_api.enabled:
+    logger.info("Registrando SLO Pending Changes Controller")
+    import src.controllers.slo_pending_changes_controller  # noqa: F401
 
 if settings.enable_slo_controller:
     logger.info("Registrando SLO Controller")

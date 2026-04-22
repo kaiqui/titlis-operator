@@ -112,6 +112,20 @@ class TestDatadogRepository:
         assert success is True
         mock_slo_manager.update_service_level_objective.assert_called_once()
 
+    def test_detect_trace_framework(self, datadog_repo):
+        mock_metrics_manager = Mock()
+        mock_metrics_manager.detect_supported_framework.return_value = "fastapi"
+        datadog_repo.factory.create_manager.side_effect = lambda name: (
+            mock_metrics_manager if name == "metrics" else Mock()
+        )
+
+        framework = datadog_repo.detect_trace_framework("test-service")
+
+        assert framework.value == "fastapi"
+        mock_metrics_manager.detect_supported_framework.assert_called_once_with(
+            "test-service", 30
+        )
+
     def test_extract_slo_id_from_response(self, datadog_repo):
         # Test format 1: direct id in response
         response1 = {"slo_id": "test-id-1"}

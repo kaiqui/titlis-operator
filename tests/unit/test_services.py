@@ -26,8 +26,17 @@ class TestSLOService:
         # Mock find_slo_by_tags
         mock.find_slo_by_tags.return_value = None
 
-        # Mock get_service_definition
-        mock.get_service_definition.return_value = None
+        # Mock active trace-based framework detection
+        mock.detect_trace_framework.return_value = None
+
+        # Mock get_service_definition — returns a valid ServiceDefinition by default
+        # so reconcile_slo() proceeds past service validation
+        from src.domain.models import ServiceDefinition
+
+        mock.get_service_definition.return_value = ServiceDefinition(
+            dd_service="test-service",
+            tags=["framework:fastapi"],
+        )
 
         return mock
 
@@ -52,7 +61,7 @@ class TestSLOService:
             namespace="default", service="test-service", spec=sample_slo_spec
         )
 
-        assert slo.name == "SLO - default/test-service"
+        assert slo.name == "[Disponibilidade] default/test-service"
         assert slo.service_name == "test-service"
         assert slo.slo_type == SLOType.METRIC
         assert slo.target_threshold == 99.9
@@ -276,8 +285,32 @@ class TestSLOService:
         assert fw == SLOAppFramework.AIOHTTP
         assert source == "datadog_tag"
 
-    def test_detect_framework_priority3_fallback(self, slo_service, mock_datadog_port):
+    def test_detect_framework_priority3_datadog_metrics(
+        self, slo_service, mock_datadog_port
+    ):
+        from src.domain.models import ServiceDefinition
+
+        mock_datadog_port.get_service_definition.return_value = ServiceDefinition(
+            dd_service="test-service",
+            tags=[],
+        )
+        mock_datadog_port.detect_trace_framework.return_value = SLOAppFramework.FASTAPI
+
+        spec = SLOConfigSpec(
+            service="test-service",
+            type=SLOType.METRIC,
+            target=99.9,
+            auto_detect_framework=True,
+        )
+
+        fw, source = slo_service._detect_framework(spec, k8s_annotations=None)
+
+        assert fw == SLOAppFramework.FASTAPI
+        assert source == "datadog_metrics"
+
+    def test_detect_framework_priority4_fallback(self, slo_service, mock_datadog_port):
         mock_datadog_port.get_service_definition.return_value = None
+        mock_datadog_port.detect_trace_framework.return_value = None
 
         spec = SLOConfigSpec(
             service="test-service",
@@ -291,13 +324,39 @@ class TestSLOService:
         assert fw == SLOAppFramework.WSGI
         assert source == "fallback"
 
+    def test_build_slo_wsgi_query_includes_web_and_wsgi_prefixes(
+        self, slo_service
+    ):
+        spec = SLOConfigSpec(
+            service="test-service",
+            type=SLOType.METRIC,
+            target=99.9,
+            app_framework=SLOAppFramework.WSGI,
+            tags=["env:test"],
+        )
+
+        slo = slo_service._build_slo_from_spec(
+            namespace="default", service="test-service", spec=spec, env="test"
+        )
+
+        assert "trace.wsgi.request.hits" in slo.query["numerator"]
+        assert "trace.web.request.hits" in slo.query["numerator"]
+        assert "trace.wsgi.request.errors" in slo.query["denominator"]
+        assert "trace.web.request.errors" in slo.query["denominator"]
+
     def test_auto_detect_framework_writes_detected_framework_in_result(
         self, slo_service, mock_datadog_port
     ):
+        from src.domain.models import ServiceDefinition
+
         mock_datadog_port.find_slo_by_tags.return_value = None
         mock_datadog_port.get_service_slos.return_value = []
         mock_datadog_port.create_slo.return_value = "slo-fw-test"
-        mock_datadog_port.get_service_definition.return_value = None
+        # Service exists in Datadog catalog but has no framework tag → fallback WSGI
+        mock_datadog_port.get_service_definition.return_value = ServiceDefinition(
+            dd_service="fw-service",
+            tags=[],
+        )
 
         spec = SLOConfigSpec(
             service="fw-service",
@@ -634,7 +693,7 @@ class TestScorecardService:
         )
         assert scorecard_service.get_notification_severity(info_scorecard) == "info"
 
-    def _make_dd_deployment(self, lib_version="v4.5.3"):
+    def _make_dd_deployment(self):
         dd_labels = {
             "tags.datadoghq.com/env": "production",
             "tags.datadoghq.com/service": "my-service",
@@ -653,9 +712,6 @@ class TestScorecardService:
                             **dd_labels,
                             "admission.datadoghq.com/enabled": "true",
                         },
-                        "annotations": {
-                            "admission.datadoghq.com/python-lib.version": lib_version,
-                        },
                     },
                     "spec": {"containers": [{"name": "app", "image": "app:1.0.0"}]},
                 }
@@ -665,7 +721,7 @@ class TestScorecardService:
     def test_ops_001_passes_when_fully_instrumented(self, scorecard_service):
         from src.domain.models import ValidationPillar
 
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
         result = scorecard_service._validate_ops_001(
             rule, resource, "default", "test-deployment"
@@ -676,7 +732,7 @@ class TestScorecardService:
         assert "✅" in result.message
 
     def test_ops_001_fails_when_metadata_labels_missing(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         resource["metadata"].pop("labels")
         rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
         result = scorecard_service._validate_ops_001(
@@ -687,7 +743,7 @@ class TestScorecardService:
         assert "metadata.labels[tags.datadoghq.com/env]" in result.message
 
     def test_ops_001_fails_when_pod_template_label_missing(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
+        resource = self._make_dd_deployment()
         resource["spec"]["template"]["metadata"]["labels"].pop(
             "admission.datadoghq.com/enabled"
         )
@@ -699,32 +755,129 @@ class TestScorecardService:
         assert result.passed is False
         assert "admission.datadoghq.com/enabled=true" in result.message
 
-    def test_ops_001_fails_when_lib_version_too_old(self, scorecard_service):
-        resource = self._make_dd_deployment("v3.17.2")
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
+
+class TestSLOServiceEnvExtraction:
+    @pytest.fixture
+    def mock_datadog_port(self):
+        from src.domain.models import ServiceDefinition
+
+        mock = Mock()
+        mock.get_service_slos.return_value = []
+        mock.create_slo.return_value = "slo-id-123"
+        mock.update_slo_apps.return_value = True
+        mock.find_slo_by_tags.return_value = None
+        mock.get_service_definition.return_value = ServiceDefinition(
+            dd_service="my-api", tags=[]
+        )
+        return mock
+
+    @pytest.fixture
+    def slo_service(self, mock_datadog_port):
+        return SLOService(mock_datadog_port)
+
+    def test_extract_env_from_spec_with_env_tag(self, slo_service):
+        spec = SLOConfigSpec(service="svc", tags=["env:production", "team:backend"])
+        assert slo_service._extract_env_from_spec(spec) == "production"
+
+    def test_extract_env_from_spec_with_staging(self, slo_service):
+        spec = SLOConfigSpec(service="svc", tags=["env:staging"])
+        assert slo_service._extract_env_from_spec(spec) == "staging"
+
+    def test_extract_env_from_spec_no_env_tag_defaults_to_production(self, slo_service):
+        spec = SLOConfigSpec(service="svc", tags=["team:backend"])
+        assert slo_service._extract_env_from_spec(spec) == "production"
+
+    def test_extract_env_from_spec_empty_tags_defaults_to_production(self, slo_service):
+        spec = SLOConfigSpec(service="svc", tags=[])
+        assert slo_service._extract_env_from_spec(spec) == "production"
+
+    def test_build_slo_wsgi_uses_dynamic_env(self, slo_service):
+        spec = SLOConfigSpec(
+            service="my-api",
+            type=SLOType.METRIC,
+            app_framework=SLOAppFramework.WSGI,
+            tags=["env:production"],
+        )
+        slo = slo_service._build_slo_from_spec("ns", "my-api", spec, env="production")
+        assert slo.query is not None
+        assert "env:production" in slo.query["numerator"]
+        assert "env:dev" not in slo.query["numerator"]
+        assert "env:dev" not in slo.query["denominator"]
+
+    def test_build_slo_fastapi_uses_dynamic_env(self, slo_service):
+        spec = SLOConfigSpec(
+            service="my-api",
+            type=SLOType.METRIC,
+            app_framework=SLOAppFramework.FASTAPI,
+            tags=["env:staging"],
+        )
+        slo = slo_service._build_slo_from_spec("ns", "my-api", spec, env="staging")
+        assert slo.query is not None
+        assert "env:staging" in slo.query["numerator"]
+        assert "env:dev" not in slo.query["numerator"]
+
+    def test_build_slo_aiohttp_uses_dynamic_env(self, slo_service):
+        spec = SLOConfigSpec(
+            service="my-api",
+            type=SLOType.METRIC,
+            app_framework=SLOAppFramework.AIOHTTP,
+            tags=["env:homolog"],
+        )
+        slo = slo_service._build_slo_from_spec("ns", "my-api", spec, env="homolog")
+        assert slo.query is not None
+        assert "env:homolog" in slo.query["numerator"]
+
+    def test_reconcile_slo_skips_when_service_not_in_datadog(
+        self, slo_service, mock_datadog_port
+    ):
+        mock_datadog_port.get_service_definition.return_value = None
+        spec = SLOConfigSpec(service="unknown-svc", type=SLOType.METRIC)
+
+        result = slo_service.reconcile_slo("ns", "unknown-svc", spec)
+
+        assert result["success"] is False
+        assert result["action"] == "skipped_no_datadog_service"
+        mock_datadog_port.create_slo.assert_not_called()
+        mock_datadog_port.update_slo_apps.assert_not_called()
+
+    def test_reconcile_slo_proceeds_when_service_found_in_datadog(
+        self, slo_service, mock_datadog_port
+    ):
+        from src.domain.models import ServiceDefinition
+
+        mock_datadog_port.get_service_definition.return_value = ServiceDefinition(
+            dd_service="my-api", tags=[]
+        )
+        spec = SLOConfigSpec(
+            service="my-api",
+            type=SLOType.METRIC,
+            app_framework=SLOAppFramework.WSGI,
+            tags=["env:production"],
         )
 
-        assert result.passed is False
-        assert "python-lib.version" in result.message
+        result = slo_service.reconcile_slo("ns", "my-api", spec)
 
-    def test_ops_001_passes_with_version_exactly_above_minimum(self, scorecard_service):
-        resource = self._make_dd_deployment("v3.17.3")
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
+        assert result["success"] is True
+        assert result["action"] == "created"
+
+    def test_reconcile_slo_path_a_uses_env_from_spec(
+        self, slo_service, mock_datadog_port
+    ):
+        spec = SLOConfigSpec(
+            service="my-api",
+            type=SLOType.METRIC,
+            app_framework=SLOAppFramework.WSGI,
+            tags=["env:production"],
         )
 
-        assert result.passed is True
-
-    def test_ops_001_fails_when_annotation_absent(self, scorecard_service):
-        resource = self._make_dd_deployment("v4.5.3")
-        resource["spec"]["template"]["metadata"]["annotations"] = {}
-        rule = next(r for r in scorecard_service.config.rules if r.id == "OPS-001")
-        result = scorecard_service._validate_ops_001(
-            rule, resource, "default", "test-deployment"
+        result = slo_service.reconcile_slo(
+            "ns", "my-api", spec, known_slo_id="existing-id"
         )
 
-        assert result.passed is False
-        assert "python-lib.version" in result.message
+        assert result["action"] == "updated"
+        assert result["slo_id"] == "existing-id"
+        call_args = mock_datadog_port.update_slo_apps.call_args
+        slo_arg = call_args[0][1]
+        assert slo_arg.query is not None
+        assert "env:production" in slo_arg.query["numerator"]
+        assert "env:dev" not in slo_arg.query["numerator"]

@@ -17,13 +17,23 @@
 O **titlis-operator** é um Kubernetes Operator escrito em Python (Kopf) que automatiza:
 
 - **Scoring de compliance** — avalia Deployments contra 26+ regras em 6 pilares
-- **Auto-remediação** — abre PRs no GitHub corrigindo recursos e HPA
 - **SLO sync** — sincroniza SLOs declarativos com Datadog (3-path idempotency)
+- **Auto-criação de SLOs** — detecta Deployments instrumentados com Datadog e cria SLOs padrão automaticamente
 - **Notificações Slack** — alerts e digests por namespace (rate-limited)
 - **Enriquecimento** — integra Backstage (ownership) e CAST AI (custo)
 
 O operator também envia todos os eventos para o **titlis-api** via UDP:8125, que persiste no
 PostgreSQL para o dashboard.
+
+> **Atenção — migração de responsabilidade:** A responsabilidade de abrir PRs de remediação
+> no GitHub **migrou para o `titlis-ai`**. O operator passou a ser exclusivamente um motor de
+> avaliação: observa Deployments, calcula scores, escreve CRDs e envia eventos UDP.
+> Os seguintes arquivos foram removidos do operator:
+> - `src/application/services/remediation_service.py`
+> - `src/application/ports/github_port.py`
+> - `src/infrastructure/github/`
+> - `src/infrastructure/kubernetes/remediation_writer.py`
+> - Variáveis `GITHUB_*` e `REMEDIATION_*` do `settings.py`
 
 ---
 
@@ -230,13 +240,20 @@ on_resource_event(body, event_type)
          │
          ├── ScorecardService.evaluate_resource()
          │       └── 26+ regras, 6 pilares, score ponderado
+         │       └── OPS-001 extrai dd_service + dd_env dos pod labels
+         │             (tags.datadoghq.com/service, tags.datadoghq.com/env)
          │
-         ├── Findings remediáveis? → RemediationService.create_remediation_pr()
-         │       ├── Extrai DD_GIT_REPOSITORY_URL do Deployment
-         │       ├── Busca métricas CPU/mem no Datadog (profiling)
-         │       ├── Lê manifests/kubernetes/main/deploy.yaml (ruamel.yaml)
-         │       ├── Modifica resources.requests/limits (NUNCA reduz)
-         │       ├── Cria/atualiza HPA YAML
+         ├── [REMOVIDO] Findings remediáveis → RemediationService (migrado para titlis-ai)
+         │
+         ├── _maybe_auto_create_slo(body, namespace, dd_service, dd_env)
+         │       ├── SLOConfig CRD com label titlis.io/source-uid já existe? → skip
+         │       ├── OPS-001 falhou? → skip (sem instrumentação Datadog)
+         │       ├── ENABLE_AUTO_SLO_CREATION=false? → skip
+         │       └── Cria SLOConfig CRD com labels titlis.io/auto-created, source-uid, dd-env
+         │
+         ├── [TODO: remediação via titlis-ai — não pertence mais ao operator]
+         │
+         ├── AppScorecardWriter.upsert()
          │       ├── Cria branch + commit + PR no GitHub
          │       └── Verifica PR existente (idempotência)
          │
@@ -268,10 +285,18 @@ on_slo_config_change(body, event_type)
          │       3. Datadog ServiceDefinition.tags "framework:*"
          │       4. Fallback: "wsgi"
          │
+         ├── _extract_env_from_spec(spec) → str
+         │       # Lê tag "env:<valor>" do spec.tags ou label titlis.io/dd-env
+         │       # Padrão: "production" (não mais "dev" hardcoded)
+         │
          ├── SLOService.reconcile_slo() — 3 paths:
          │       Path A (restart fast): status.slo_id presente → usa diretamente
          │       Path B (orphan safety): busca por tag titlis_resource_uid:<uid>
          │       Path C (normal): lista SLOs do serviço → busca match → cria se não existe
+         │       (todas as queries usam env dinâmico de _extract_env_from_spec)
+         │
+         ├── Valida serviço no Datadog antes de criar SLO:
+         │       get_service_definition(service) → None → action="skipped_no_datadog_service"
          │
          ├── Atualiza status com slo_id, detected_framework, state
          ├── Notifica Slack (ALERTS se erro, OPERATIONAL se sucesso)
@@ -281,7 +306,58 @@ on_slo_config_change(body, event_type)
 
 ---
 
-## 8. Padrões Críticos de Implementação
+## 8. Auto-criação de SLOs
+
+Controlado por `ENABLE_AUTO_SLO_CREATION` (padrão `false` — opt-in).
+
+### `_maybe_auto_create_slo(body, namespace, dd_service, dd_env)`
+
+Chamado pelo `ScorecardController` após avaliação quando OPS-001 passou.
+
+**Guards em ordem:**
+1. `ENABLE_AUTO_SLO_CREATION` desabilitado → skip
+2. SLOConfig CRD com `label titlis.io/source-uid = deployment.uid` já existe → skip (idempotente)
+3. Serviço não existe no catálogo Datadog → skip com log warning
+4. Tipo `monitor` ou `time_slice` → skip (auto-criação só para `type=metric`)
+
+**CRD criado:**
+```yaml
+metadata:
+  name: "auto-{dd_service}"
+  labels:
+    titlis.io/auto-created: "true"
+    titlis.io/source-uid: "{deployment.uid}"
+    titlis.io/source-name: "{deployment.name}"
+    titlis.io/source-namespace: "{namespace}"
+    titlis.io/dd-env: "{dd_env}"
+spec:
+  service: "{dd_service}"
+  auto_detect_framework: true
+  target: 99.0      # AUTO_SLO_DEFAULT_TARGET
+  warning: 99.5     # AUTO_SLO_DEFAULT_WARNING (deve ser > target)
+  timeframe: "30d"  # AUTO_SLO_DEFAULT_TIMEFRAME
+  tags: ["env:{dd_env}", "managed_by:titlis_operator"]
+```
+
+### `_extract_env_from_spec(spec: SLOConfigSpec) -> str`
+
+Extrai `env:` de `spec.tags`. Padrão: `"production"` se ausente. Corrige o bug anterior
+de `env:dev` hardcoded nas queries do Datadog (wsgi, FastAPI, aiohttp, etc.).
+
+### Polling de mudanças pendentes de SLO
+
+Loop background (similar ao `castai_monitor_controller`) que:
+1. Chama `GET /v1/operator/pending-slo-changes` no titlis-api a cada ~30s
+2. Para cada mudança `status=pending`: patcha o SLOConfig CRD via kubernetes client
+3. Kopf detecta o `on.update` → `reconcile_slo()` → Path A (fast path, slo_id preservado)
+4. Confirma via `POST /v1/operator/pending-slo-changes/{id}/applied`
+5. Em falha: `POST /v1/operator/pending-slo-changes/{id}/failed` com mensagem de erro
+
+Auth: usa a API key existente do operator (`TITLIS_API_API_KEY`).
+
+---
+
+## 9. Padrões Críticos de Implementação
 
 ### Never-Reduce (recursos de Deployment)
 ```python
@@ -290,6 +366,7 @@ def _keep_max(current: str, suggested: str, parser: Callable) -> str:
 ```
 **Regra:** CPU requests, CPU limits, memory requests, memory limits nunca são reduzidos.
 Aplique este padrão a qualquer lógica que modifique recursos de containers.
+**Esta validação também é aplicada no titlis-ai antes de criar PRs.**
 
 ### HPA utilization — usar MIN
 ```python
@@ -300,9 +377,8 @@ cpu_util = min(current_cpu_util, default) if current_cpu_util else default
 
 ### Idempotência de PR
 ```python
-# Antes de criar PR, sempre verificar:
-# 1. Set in-memory (_pending) para evitar duplicatas na mesma sessão
-# 2. GitHub API: find_open_remediation_pr() para evitar duplicatas entre restarts
+# [NOTA: criação de PR agora é responsabilidade do titlis-ai]
+# No operator: check_existing_pr verifica PR aberto antes de acionar titlis-ai
 ```
 
 ### YAML Round-Trip
@@ -339,7 +415,7 @@ def get_slo_service() -> Optional[SLOService]:
 
 ---
 
-## 9. Integrações Externas
+## 10. Integrações Externas
 
 ### Datadog
 | Operação | Finalidade |
@@ -399,7 +475,12 @@ LOG_FORMAT=json
 
 ENABLE_SCORECARD_CONTROLLER=true
 ENABLE_SLO_CONTROLLER=true
-ENABLE_AUTO_REMEDIATION=true
+ENABLE_AUTO_REMEDIATION=true  # DEPRECATED — remediação migrou para titlis-ai
+ENABLE_AUTO_SLO_CREATION=false  # opt-in: cria SLOConfig CRD automaticamente
+AUTO_SLO_DEFAULT_TARGET=99.9
+AUTO_SLO_DEFAULT_WARNING=99.0
+AUTO_SLO_DEFAULT_TIMEFRAME=30d
+AUTO_SLO_REQUIRE_DATADOG_SERVICE=true  # skip se serviço não existe no catálogo Datadog
 ENABLE_CASTAI_MONITOR=false
 ENABLE_SYNTHETIC_MONITOR=false
 SYNTHETIC_CHECKS_CONFIG_PATH=/etc/titlis/synthetic-checks.yaml  # se omitida usa vars legadas abaixo
@@ -422,28 +503,9 @@ DD_SERVICE=titlis-operator
 DD_GIT_REPOSITORY_URL=https://github.com/org/repo
 ```
 
-### GitHub
-```bash
-GITHUB_ENABLED=true
-GITHUB_TOKEN=ghp_...
-GITHUB_BASE_BRANCH=develop
-GITHUB_TIMEOUT_SECONDS=30.0
-```
-
-### Remediação — Defaults
-```bash
-REMEDIATION_DEFAULT_CPU_REQUEST=100m
-REMEDIATION_DEFAULT_CPU_LIMIT=500m
-REMEDIATION_DEFAULT_MEMORY_REQUEST=128Mi
-REMEDIATION_DEFAULT_MEMORY_LIMIT=512Mi
-REMEDIATION_HPA_MIN_REPLICAS=2
-REMEDIATION_HPA_MAX_REPLICAS=10
-REMEDIATION_HPA_CPU_UTILIZATION=70
-REMEDIATION_HPA_MEMORY_UTILIZATION=80
-REMEDIATION_HPA_BEHAVIOR_SCALE_UP_PODS=4
-REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_PODS=1
-REMEDIATION_HPA_BEHAVIOR_SCALE_DOWN_STABILIZATION=300
-```
+### GitHub (REMOVIDO — migrado para titlis-ai via tenant_ai_config)
+> As variáveis `GITHUB_*` e `REMEDIATION_*` foram removidas do operator.
+> GitHub token e base branch agora são configurados por tenant em `titlis_oltp.tenant_ai_config`.
 
 ### Slack
 ```bash
@@ -675,10 +737,13 @@ Qualquer path ausente, não-dict intermediário ou valor não numérico retorna 
 ## 16. O Que Não Fazer
 
 - **Nunca** adicione docstrings — código deve ser autoexplicativo
-- **Nunca** reduza `resources.requests/limits` — use `_keep_max()`
+- **Nunca** reduza `resources.requests/limits` — use `_keep_max()` (a mesma lógica está no titlis-ai)
 - **Nunca** omita o `tenant_id` no envelope UDP para o titlis-api
-- **Nunca** deixe o operator bloquear em falhas externas (Slack/GitHub/Datadog) — são fire-and-forget
+- **Nunca** deixe o operator bloquear em falhas externas (Slack/Datadog) — são fire-and-forget
 - **Nunca** faça `yaml.load()` com PyYAML em manifests — use `ruamel.yaml` para preservar formatação
 - **Nunca** instancie repositórios fora de `bootstrap/dependencies.py` — quebraria o DI
 - **Nunca** processe namespaces do sistema (kube-system, datadog, etc.) — estão na exclusion list
-- **Nunca** crie um segundo PR de remediação sem verificar o existente via GitHub API
+- **Nunca** abra PRs no GitHub diretamente do operator — essa responsabilidade é do titlis-ai
+- **Nunca** acesse o Kubernetes em loop síncrono no polling de pending-slo-changes — use `run_in_executor` ou thread separada (ver `feedback_operator_threading.md`)
+- **Nunca** crie SLOConfig com `type=monitor` via auto-criação — apenas `type=metric` tem suporte
+- **Nunca** hardcode `env:dev` em queries Datadog — use `_extract_env_from_spec()` para obter o env real

@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from typing import List, Optional
-from src.domain.models import ServiceDefinition, SLO
+from src.domain.models import ServiceDefinition, SLO, SLOAppFramework
 
 
 class DatadogPort(ABC):
@@ -30,4 +30,10 @@ class DatadogPort(ABC):
 
     @abstractmethod
     def find_slo_by_tags(self, tags: List[str]) -> Optional[SLO]:
+        pass
+
+    @abstractmethod
+    def detect_trace_framework(
+        self, service_name: str, days: int = 30
+    ) -> Optional[SLOAppFramework]:
         pass

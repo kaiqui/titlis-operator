@@ -366,10 +366,9 @@ class ScorecardService:
                 pillar=ValidationPillar.OPERATIONAL,
                 name="Instrumentação Datadog",
                 description=(
-                    "Deployment deve ter labels e annotations de instrumentação Datadog: "
+                    "Deployment deve ter labels de instrumentação Datadog: "
                     "tags.datadoghq.com/{env,service,version} em metadata e spec.template, "
-                    "admission.datadoghq.com/enabled=true no pod template e "
-                    "admission.datadoghq.com/python-lib.version > 3.17.2"
+                    "admission.datadoghq.com/enabled=true no pod template"
                 ),
                 rule_type=ValidationRuleType.BOOLEAN,
                 source="K8s API",
@@ -738,9 +737,11 @@ class ScorecardService:
                             extra={
                                 "rule_id": rule_id,
                                 "part": part,
-                                "current_value_type": type(current_value).__name__
-                                if current_value
-                                else "None",
+                                "current_value_type": (
+                                    type(current_value).__name__
+                                    if current_value
+                                    else "None"
+                                ),
                                 "exception": str(e),
                             },
                         )
@@ -908,36 +909,11 @@ class ScorecardService:
                 "spec.template.metadata.labels[admission.datadoghq.com/enabled=true]"
             )
 
-        pod_annotations = template_meta.get("annotations") or {}
-        lib_version_raw = pod_annotations.get(
-            "admission.datadoghq.com/python-lib.version"
-        )
-        min_version = (3, 17, 2)
-        if not lib_version_raw:
-            missing.append(
-                "spec.template.metadata.annotations[admission.datadoghq.com/python-lib.version]"
-            )
-        else:
-            version_str = lib_version_raw.lstrip("v")
-            try:
-                parts = tuple(int(x) for x in version_str.split(".")[:3])
-                if parts <= min_version:
-                    missing.append(
-                        f"admission.datadoghq.com/python-lib.version={lib_version_raw} "
-                        f"(requer > v{'.'.join(str(x) for x in min_version)})"
-                    )
-            except ValueError:
-                missing.append(
-                    f"admission.datadoghq.com/python-lib.version={lib_version_raw} (formato inválido)"
-                )
-
         passed = len(missing) == 0
         if passed:
             message = f"{rule.name}: ✅ Instrumentação Datadog configurada corretamente"
         else:
-            message = (
-                f"{rule.name}: ❌ Configurações ausentes/inválidas: {', '.join(missing)}"
-            )
+            message = f"{rule.name}: ❌ Configurações ausentes/inválidas: {', '.join(missing)}"
 
         return ValidationResult(
             rule_id=rule.id,
@@ -947,7 +923,7 @@ class ScorecardService:
             severity=rule.severity,
             weight=rule.weight,
             message=message,
-            actual_value=lib_version_raw,
+            actual_value=None,
             remediation=rule.remediation,
             documentation_url=rule.documentation_url,
         )

@@ -6,7 +6,6 @@ from functools import lru_cache
 from src.settings import settings
 from src.infrastructure.kubernetes.k8s_status_writer import KubernetesStatusWriter
 from src.infrastructure.kubernetes.appscorecard_writer import AppScorecardWriter
-from src.infrastructure.kubernetes.remediation_writer import RemediationWriter
 from src.infrastructure.datadog.repository import DatadogRepository
 from src.infrastructure.slack.repository import SlackRepository
 from src.application.services.slo_service import SLOService
@@ -375,76 +374,9 @@ def get_slo_service() -> Optional[SLOService]:
     if not settings.enable_slo_controller:
         logger.info("SLO controller desabilitado via feature flag")
         return None
-    datadog_repo = get_datadog_repository()
-    return SLOService(datadog_repo)
-
-
-@lru_cache()
-def get_github_repository() -> Any:
-    from src.infrastructure.github.client import GitHubAPIClient
-    from src.infrastructure.github.repository import GitHubRepository
-
-    if not settings.enable_auto_remediation:
-        logger.info("Auto-remediacao desabilitada via feature flag")
-        return None
-
-    if not settings.github.enabled:
-        logger.info("Integracao GitHub desabilitada via GITHUB_ENABLED")
-        return None
-
-    token = settings.github.token.get_secret_value() if settings.github.token else None
-    if not token:
-        logger.warning("GITHUB_TOKEN nao configurado — auto-remediacao desabilitada")
-        return None
-
-    client = GitHubAPIClient(
-        token=token,
-        timeout=settings.github.timeout_seconds,
-    )
-    repo = GitHubRepository(client)
-
-    logger.info(
-        "GitHubRepository inicializado",
-        extra={"base_branch": settings.github.base_branch},
-    )
-    return repo
-
-
-@lru_cache()
-def get_remediation_writer() -> Optional[RemediationWriter]:
-    if not settings.enable_auto_remediation:
-        return None
-    writer = RemediationWriter()
-    logger.info("RemediationWriter inicializado")
-    return writer
-
-
-@lru_cache()
-def get_remediation_service() -> Any:
-    from src.application.services.remediation_service import RemediationService
-
-    github_repo = get_github_repository()
-    if not github_repo:
-        return None
-
-    slack_service = get_slack_service()
-
-    datadog_repo: Optional[DatadogRepository] = None
     try:
         datadog_repo = get_datadog_repository()
-    except Exception:
-        logger.warning(
-            "DatadogRepository indisponivel para RemediationService — "
-            "valores de resources padrao serao usados"
-        )
-
-    service = RemediationService(
-        github_port=github_repo,
-        slack_service=slack_service,
-        datadog_repository=datadog_repo,
-        remediation_settings=settings.remediation,
-        titlis_api_client=get_titlis_api_client(),
-    )
-
-    logger.info("RemediationService inicializado")
-    return service
+    except ValueError:
+        logger.warning("SLO controller desabilitado: credenciais Datadog ausentes")
+        return None
+    return SLOService(datadog_repo)

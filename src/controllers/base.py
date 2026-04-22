@@ -129,9 +129,9 @@ class BaseController:
                             "title": title,
                             "message_preview": message[:500],
                             "success": success,
-                            "error_message": None
-                            if success
-                            else "Falha ao enviar notificação Slack",
+                            "error_message": (
+                                None if success else "Falha ao enviar notificação Slack"
+                            ),
                         }
                     )
                 except Exception:
@@ -195,9 +195,7 @@ class BaseController:
         ns = report.resource_namespace
         name = report.resource_name
 
-        message = (
-            f"🚨 *Deployment {name} tem {len(report.issues)} issue(s) de compliance*\n\n"
-        )
+        message = f"🚨 *Deployment {name} tem {len(report.issues)} issue(s) de compliance*\n\n"
 
         critical_issues = [i for i in report.issues if "[CRITICAL]" in i]
         error_issues = [

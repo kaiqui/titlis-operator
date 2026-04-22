@@ -1,8 +1,14 @@
 import traceback
 from typing import List, Optional, Dict, Any
 
-from src.domain.models import ServiceDefinition, SLO, SLOType, SLOTimeframe
-from src.domain.github_models import DatadogProfilingMetrics
+from src.domain.models import (
+    ServiceDefinition,
+    SLO,
+    SLOType,
+    SLOTimeframe,
+    SLOAppFramework,
+)
+from src.domain.models import DatadogProfilingMetrics
 from src.application.ports.datadog_port import DatadogPort
 from src.infrastructure.datadog.factory import DatadogManagerFactory
 from src.utils.json_logger import get_logger
@@ -138,9 +144,11 @@ class DatadogRepository(DatadogPort):
                     # Fallback: construir threshold correto
                     threshold_data = {
                         "timeframe": slo.timeframe.value,
-                        "target": float(slo.target_threshold)
-                        if slo.target_threshold
-                        else 99.9,
+                        "target": (
+                            float(slo.target_threshold)
+                            if slo.target_threshold
+                            else 99.9
+                        ),
                     }
 
                     if hasattr(slo, "warning_threshold") and slo.warning_threshold:
@@ -167,12 +175,12 @@ class DatadogRepository(DatadogPort):
                     type=slo.slo_type.value,
                     thresholds=thresholds,  # Usar thresholds construídos
                     timeframe=slo.timeframe.value,
-                    target_threshold=float(slo.target_threshold)
-                    if slo.target_threshold
-                    else None,
-                    warning_threshold=float(slo.warning_threshold)
-                    if slo.warning_threshold
-                    else None,
+                    target_threshold=(
+                        float(slo.target_threshold) if slo.target_threshold else None
+                    ),
+                    warning_threshold=(
+                        float(slo.warning_threshold) if slo.warning_threshold else None
+                    ),
                     tags=slo.tags,
                     description=slo.description or "",
                     query=slo.query,
@@ -200,12 +208,14 @@ class DatadogRepository(DatadogPort):
                         "type": slo.slo_type.value,
                         "target_threshold": getattr(slo, "target_threshold", "N/A"),
                         "warning_threshold": getattr(slo, "warning_threshold", "N/A"),
-                        "timeframe": getattr(slo.timeframe, "value", "N/A")
-                        if hasattr(slo, "timeframe")
-                        else "N/A",
-                        "thresholds": str(slo.thresholds)
-                        if hasattr(slo, "thresholds")
-                        else "N/A",
+                        "timeframe": (
+                            getattr(slo.timeframe, "value", "N/A")
+                            if hasattr(slo, "timeframe")
+                            else "N/A"
+                        ),
+                        "thresholds": (
+                            str(slo.thresholds) if hasattr(slo, "thresholds") else "N/A"
+                        ),
                     },
                 },
             )
@@ -226,9 +236,9 @@ class DatadogRepository(DatadogPort):
                 # Construir threshold se não existir
                 threshold_data = {
                     "timeframe": slo.timeframe.value,
-                    "target": float(slo.target_threshold)
-                    if slo.target_threshold
-                    else 99.9,
+                    "target": (
+                        float(slo.target_threshold) if slo.target_threshold else 99.9
+                    ),
                 }
                 if hasattr(slo, "warning_threshold") and slo.warning_threshold:
                     threshold_data["warning"] = float(slo.warning_threshold)
@@ -415,4 +425,20 @@ class DatadogRepository(DatadogPort):
 
         except Exception:
             self.logger.exception("Erro em find_slo_by_tags", extra={"tags": tags})
+            return None
+
+    def detect_trace_framework(
+        self, service_name: str, days: int = 30
+    ) -> Optional[SLOAppFramework]:
+        try:
+            manager = self.factory.create_manager("metrics")
+            result: Optional[str] = manager.detect_supported_framework(
+                service_name, days
+            )
+            return SLOAppFramework(result) if result else None
+        except Exception:
+            self.logger.exception(
+                "Erro ao detectar framework via métricas",
+                extra={"service_name": service_name, "days": days},
+            )
             return None

@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from src.domain.github_models import DatadogProfilingMetrics
+from src.domain.models import DatadogProfilingMetrics
 from src.infrastructure.datadog.managers.base import DatadogManagerBase
 from src.utils.json_logger import get_logger
 
@@ -11,6 +11,12 @@ logger = get_logger(__name__)
 _NANOCORES_TO_MILLICORES = 1_000_000
 # Bytes → MiB: dividir por 1_048_576
 _BYTES_TO_MIB = 1_048_576
+
+_FRAMEWORK_TRACE_PREFIXES = {
+    "fastapi": ["fastapi"],
+    "aiohttp": ["aiohttp"],
+    "wsgi": ["wsgi", "web"],
+}
 
 
 class DatadogMetricsManager(DatadogManagerBase):
@@ -134,3 +140,52 @@ class DatadogMetricsManager(DatadogManagerBase):
                 extra={"service_name": service_name},
             )
             return None
+
+    def detect_supported_framework(
+        self,
+        service_name: str,
+        days: int = 30,
+    ) -> Optional[str]:
+        from datadog_api_client.v1.api.metrics_api import MetricsApi
+
+        now = datetime.now(timezone.utc)
+        start = now - timedelta(days=days)
+        from_ts = int(start.timestamp())
+        to_ts = int(now.timestamp())
+
+        api = MetricsApi(self.api_client)
+
+        for framework, prefixes in _FRAMEWORK_TRACE_PREFIXES.items():
+            for prefix in prefixes:
+                query = (
+                    f"sum:trace.{prefix}.request.hits"
+                    f"{{service:{service_name}}}.as_count()"
+                )
+                try:
+                    resp = self.execute(
+                        api.query_metrics,
+                        _from=from_ts,
+                        to=to_ts,
+                        query=query,
+                    )
+                    if resp.series:
+                        logger.info(
+                            "Framework detectado via métricas Datadog",
+                            extra={
+                                "service_name": service_name,
+                                "framework": framework,
+                                "trace_prefix": prefix,
+                            },
+                        )
+                        return framework
+                except Exception:
+                    logger.debug(
+                        "Probe de framework por métricas falhou",
+                        extra={
+                            "service_name": service_name,
+                            "framework": framework,
+                            "trace_prefix": prefix,
+                        },
+                    )
+
+        return None

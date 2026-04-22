@@ -25,4 +25,10 @@ class DatadogManagerFactory:
             )
 
             return DatadogMetricsManager(**common_kwargs)
+        if manager_name in ("service_definition", "service_definition_manager"):
+            from src.infrastructure.datadog.managers.service_definition import (
+                ServiceDefinitionManager,
+            )
+
+            return ServiceDefinitionManager(**common_kwargs)
         raise ValueError(f"Manager Datadog desconhecido: {manager_name}")
