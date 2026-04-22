@@ -26,6 +26,9 @@ class TestSLOService:
         # Mock find_slo_by_tags
         mock.find_slo_by_tags.return_value = None
 
+        # Mock active trace-based framework detection
+        mock.detect_trace_framework.return_value = None
+
         # Mock get_service_definition — returns a valid ServiceDefinition by default
         # so reconcile_slo() proceeds past service validation
         from src.domain.models import ServiceDefinition
@@ -58,7 +61,7 @@ class TestSLOService:
             namespace="default", service="test-service", spec=sample_slo_spec
         )
 
-        assert slo.name == "SLO - default/test-service"
+        assert slo.name == "[Disponibilidade] default/test-service"
         assert slo.service_name == "test-service"
         assert slo.slo_type == SLOType.METRIC
         assert slo.target_threshold == 99.9
@@ -282,8 +285,32 @@ class TestSLOService:
         assert fw == SLOAppFramework.AIOHTTP
         assert source == "datadog_tag"
 
-    def test_detect_framework_priority3_fallback(self, slo_service, mock_datadog_port):
+    def test_detect_framework_priority3_datadog_metrics(
+        self, slo_service, mock_datadog_port
+    ):
+        from src.domain.models import ServiceDefinition
+
+        mock_datadog_port.get_service_definition.return_value = ServiceDefinition(
+            dd_service="test-service",
+            tags=[],
+        )
+        mock_datadog_port.detect_trace_framework.return_value = SLOAppFramework.FASTAPI
+
+        spec = SLOConfigSpec(
+            service="test-service",
+            type=SLOType.METRIC,
+            target=99.9,
+            auto_detect_framework=True,
+        )
+
+        fw, source = slo_service._detect_framework(spec, k8s_annotations=None)
+
+        assert fw == SLOAppFramework.FASTAPI
+        assert source == "datadog_metrics"
+
+    def test_detect_framework_priority4_fallback(self, slo_service, mock_datadog_port):
         mock_datadog_port.get_service_definition.return_value = None
+        mock_datadog_port.detect_trace_framework.return_value = None
 
         spec = SLOConfigSpec(
             service="test-service",
@@ -296,6 +323,26 @@ class TestSLOService:
 
         assert fw == SLOAppFramework.WSGI
         assert source == "fallback"
+
+    def test_build_slo_wsgi_query_includes_web_and_wsgi_prefixes(
+        self, slo_service
+    ):
+        spec = SLOConfigSpec(
+            service="test-service",
+            type=SLOType.METRIC,
+            target=99.9,
+            app_framework=SLOAppFramework.WSGI,
+            tags=["env:test"],
+        )
+
+        slo = slo_service._build_slo_from_spec(
+            namespace="default", service="test-service", spec=spec, env="test"
+        )
+
+        assert "trace.wsgi.request.hits" in slo.query["numerator"]
+        assert "trace.web.request.hits" in slo.query["numerator"]
+        assert "trace.wsgi.request.errors" in slo.query["denominator"]
+        assert "trace.web.request.errors" in slo.query["denominator"]
 
     def test_auto_detect_framework_writes_detected_framework_in_result(
         self, slo_service, mock_datadog_port

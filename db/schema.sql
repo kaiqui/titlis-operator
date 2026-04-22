@@ -428,7 +428,7 @@ CREATE TABLE titlis_oltp.slo_configs (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (namespace_id, slo_config_name),
-    CONSTRAINT chk_warning_lt_target CHECK (warning IS NULL OR warning < target)
+    CONSTRAINT chk_warning_gt_target CHECK (warning IS NULL OR warning > target)
 );
 
 COMMENT ON TABLE  titlis_oltp.slo_configs                          IS 'Estado atual dos SLOs — espelha SLOConfig CRDs do Kubernetes';
@@ -439,7 +439,7 @@ COMMENT ON COLUMN titlis_oltp.slo_configs.slo_config_name          IS 'Nome do S
 COMMENT ON COLUMN titlis_oltp.slo_configs.slo_type                 IS 'Tipo de SLO: METRIC, MONITOR ou TIME_SLICE';
 COMMENT ON COLUMN titlis_oltp.slo_configs.timeframe                IS 'Janela de conformidade: 7d, 30d ou 90d';
 COMMENT ON COLUMN titlis_oltp.slo_configs.target                   IS 'Meta de conformidade (0–100)';
-COMMENT ON COLUMN titlis_oltp.slo_configs.warning                  IS 'Limiar de aviso; deve ser menor que target';
+COMMENT ON COLUMN titlis_oltp.slo_configs.warning                  IS 'Limiar de aviso; deve ser maior que target';
 COMMENT ON COLUMN titlis_oltp.slo_configs.auto_detect_framework    IS 'Flag do spec que ativa detecção automática de framework via annotation K8s ou tag Datadog';
 COMMENT ON COLUMN titlis_oltp.slo_configs.app_framework            IS 'Framework explícito do spec quando auto_detect_framework = false';
 COMMENT ON COLUMN titlis_oltp.slo_configs.detected_framework       IS 'Framework detectado automaticamente; persiste status.detected_framework do CRD';

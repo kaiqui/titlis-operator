@@ -1,7 +1,13 @@
 import traceback
 from typing import List, Optional, Dict, Any
 
-from src.domain.models import ServiceDefinition, SLO, SLOType, SLOTimeframe
+from src.domain.models import (
+    ServiceDefinition,
+    SLO,
+    SLOType,
+    SLOTimeframe,
+    SLOAppFramework,
+)
 from src.domain.models import DatadogProfilingMetrics
 from src.application.ports.datadog_port import DatadogPort
 from src.infrastructure.datadog.factory import DatadogManagerFactory
@@ -419,4 +425,20 @@ class DatadogRepository(DatadogPort):
 
         except Exception:
             self.logger.exception("Erro em find_slo_by_tags", extra={"tags": tags})
+            return None
+
+    def detect_trace_framework(
+        self, service_name: str, days: int = 30
+    ) -> Optional[SLOAppFramework]:
+        try:
+            manager = self.factory.create_manager("metrics")
+            result: Optional[str] = manager.detect_supported_framework(
+                service_name, days
+            )
+            return SLOAppFramework(result) if result else None
+        except Exception:
+            self.logger.exception(
+                "Erro ao detectar framework via métricas",
+                extra={"service_name": service_name, "days": days},
+            )
             return None

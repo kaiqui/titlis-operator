@@ -6,6 +6,12 @@ from src.utils.json_logger import get_logger
 
 
 class SLOService:
+    _FRAMEWORK_TRACE_PREFIXES = {
+        SLOAppFramework.WSGI: ["wsgi", "web"],
+        SLOAppFramework.FASTAPI: ["fastapi"],
+        SLOAppFramework.AIOHTTP: ["aiohttp"],
+    }
+
     def __init__(self, datadog_port: DatadogPort):
         self.datadog_port = datadog_port
         self.logger = get_logger(self.__class__.__name__)
@@ -179,6 +185,19 @@ class SLOService:
                             extra={"tag": tag, "service": spec.service},
                         )
 
+        detected_fw = self.datadog_port.detect_trace_framework(spec.service)
+        if detected_fw:
+            self.logger.info(
+                "Framework detectado via métricas Datadog",
+                extra={
+                    "event": "framework_detected",
+                    "slo_config": spec.service,
+                    "detected_framework": detected_fw.value,
+                    "detection_source": "datadog_metrics",
+                },
+            )
+            return detected_fw, "datadog_metrics"
+
         self.logger.info(
             "Framework não detectado, usando fallback WSGI",
             extra={
@@ -351,6 +370,22 @@ class SLOService:
     def get_service_slos(self, service_name: str) -> List[SLO]:
         return self.datadog_port.get_service_slos(service_name)
 
+    def _build_trace_count_query(
+        self,
+        prefixes: List[str],
+        metric: str,
+        env: str,
+        service: str,
+    ) -> str:
+        parts = [
+            (
+                f"sum:trace.{prefix}.request.{metric}"
+                f"{{env:{env},service:{service},span.kind:server}}.as_count()"
+            )
+            for prefix in prefixes
+        ]
+        return " + ".join(parts)
+
     def _build_slo_from_spec(
         self,
         namespace: str,
@@ -375,9 +410,21 @@ class SLOService:
                 spec.app_framework == SLOAppFramework.WSGI
                 and spec.type == SLOType.METRIC
             ):
+                request_hits = self._build_trace_count_query(
+                    self._FRAMEWORK_TRACE_PREFIXES[SLOAppFramework.WSGI],
+                    "hits",
+                    env,
+                    service,
+                )
+                request_errors = self._build_trace_count_query(
+                    self._FRAMEWORK_TRACE_PREFIXES[SLOAppFramework.WSGI],
+                    "errors",
+                    env,
+                    service,
+                )
                 query = {
-                    "numerator": f"sum:trace.wsgi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count()",
-                    "denominator": f"sum:trace.wsgi.request.hits{{env:{env},service:{service},span.kind:server}}.as_count() - sum:trace.wsgi.request.errors{{env:{env},service:{service},span.kind:server}}.as_count()",
+                    "numerator": request_hits,
+                    "denominator": f"{request_hits} - {request_errors}",
                 }
             elif (
                 spec.app_framework == SLOAppFramework.FASTAPI
@@ -418,7 +465,7 @@ class SLOService:
         )
 
         return SLO(
-            name=f"SLO - {namespace}/{service}",
+            name=f"[Disponibilidade] {namespace}/{service}",
             service_name=service,
             slo_type=spec.type,
             target_threshold=float(spec.target),
