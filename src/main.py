@@ -24,6 +24,9 @@ logger = logging.getLogger("titlis")
 
 @kopf.on.startup()
 def startup(settings_: "kopf.OperatorSettings | None" = None, **kwargs: Any) -> None:
+    level = getattr(logging, settings.log_level.upper(), logging.INFO)
+    logging.getLogger().setLevel(level)
+
     try:
         logger.info(
             "Inicializando Titlis Operator",

@@ -4,6 +4,13 @@ import traceback
 from datetime import datetime, timezone
 from typing import Any, Dict, MutableMapping, Optional
 
+_STANDARD_LOG_RECORD_KEYS = frozenset({
+    "args", "created", "exc_info", "exc_text", "filename", "funcName",
+    "levelname", "levelno", "lineno", "message", "module", "msecs",
+    "msg", "name", "pathname", "process", "processName", "relativeCreated",
+    "stack_info", "taskName", "thread", "threadName",
+})
+
 
 class JsonLogFormatter(logging.Formatter):
     def add_fields(
@@ -31,6 +38,16 @@ class JsonLogFormatter(logging.Formatter):
         log_record: Dict[str, Any] = {}
         self.add_fields(log_record, record, None)
         log_record["message"] = record.getMessage()
+
+        for key, value in record.__dict__.items():
+            if key in _STANDARD_LOG_RECORD_KEYS or key.startswith("_") or key in log_record:
+                continue
+            try:
+                json.dumps(value)
+                log_record[key] = value
+            except (TypeError, ValueError):
+                log_record[key] = str(value)
+
         return json.dumps(log_record)
 
 
@@ -52,9 +69,8 @@ def ensure_json_logging(level: int = logging.INFO) -> None:
         handler.setFormatter(JsonLogFormatter())
         root.addHandler(handler)
         logging.captureWarnings(True)
+        root.setLevel(level)
         _root_configured = True
-
-    root.setLevel(level)
 
 
 def setup_logger(name: str, level: str = "INFO") -> logging.Logger:
