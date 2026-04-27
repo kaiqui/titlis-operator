@@ -41,7 +41,7 @@ class TitlisApiUdpClient(TitlisApiPort):
                 asyncio.DatagramProtocol,
                 remote_addr=(self._host, self._udp_port),
             )
-            logger.debug(
+            logger.info(
                 "udp_socket_criado",
                 extra={"host": self._host, "port": self._udp_port},
             )
@@ -61,7 +61,7 @@ class TitlisApiUdpClient(TitlisApiPort):
             if transport is None:
                 raise RuntimeError("UDP transport indisponivel")
             transport.sendto(payload)
-            logger.debug(
+            logger.info(
                 "udp_evento_enviado",
                 extra={"event": event_type, "bytes": len(payload)},
             )
