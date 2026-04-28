@@ -324,9 +324,7 @@ class TestSLOService:
         assert fw == SLOAppFramework.WSGI
         assert source == "fallback"
 
-    def test_build_slo_wsgi_query_includes_web_and_wsgi_prefixes(
-        self, slo_service
-    ):
+    def test_build_slo_wsgi_query_includes_web_and_wsgi_prefixes(self, slo_service):
         spec = SLOConfigSpec(
             service="test-service",
             type=SLOType.METRIC,

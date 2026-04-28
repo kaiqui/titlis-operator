@@ -342,7 +342,12 @@ def get_scorecard_service() -> Optional[ScorecardService]:
     config_path = None
 
     try:
-        from kubernetes import client
+        from kubernetes import client, config as k8s_config
+
+        try:
+            k8s_config.load_incluster_config()
+        except k8s_config.ConfigException:
+            k8s_config.load_kube_config()
 
         core = client.CoreV1Api()
 

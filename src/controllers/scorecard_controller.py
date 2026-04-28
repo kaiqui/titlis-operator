@@ -1,3 +1,4 @@
+import asyncio
 import os
 import kopf
 from typing import Any, Dict, List, Optional, Tuple
@@ -78,10 +79,15 @@ class ScorecardController(BaseController):
 
             if self.appscorecard_writer:
                 try:
-                    self.appscorecard_writer.upsert(
-                        scorecard=scorecard,
-                        deployment_body=body,
-                        remediation_pr=None,
+                    writer = self.appscorecard_writer
+                    loop = asyncio.get_event_loop()
+                    await loop.run_in_executor(
+                        None,
+                        lambda: writer.upsert(
+                            scorecard=scorecard,
+                            deployment_body=body,
+                            remediation_pr=None,
+                        ),
                     )
                 except Exception:
                     self.logger.exception(
