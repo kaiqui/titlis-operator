@@ -46,6 +46,8 @@ class TitlisApiUdpClient(TitlisApiPort):
                 extra={"host": self._host, "port": self._udp_port},
             )
 
+    _UDP_MAX_BYTES = 65507
+
     async def _send_udp(self, event_type: str, data: dict) -> None:
         envelope: dict = {
             "v": 1,
@@ -57,6 +59,16 @@ class TitlisApiUdpClient(TitlisApiPort):
         try:
             await self._ensure_socket()
             payload = json.dumps(envelope, default=str).encode("utf-8")
+            if len(payload) > self._UDP_MAX_BYTES:
+                logger.warning(
+                    "udp_payload_too_large_dropped",
+                    extra={
+                        "event": event_type,
+                        "bytes": len(payload),
+                        "limit": self._UDP_MAX_BYTES,
+                    },
+                )
+                return
             transport = self._transport
             if transport is None:
                 raise RuntimeError("UDP transport indisponivel")

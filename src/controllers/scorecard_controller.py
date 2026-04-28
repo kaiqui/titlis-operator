@@ -112,6 +112,14 @@ class ScorecardController(BaseController):
                 validation_rules = {
                     rule.id: rule for rule in self.scorecard_service.config.rules
                 }
+                _HEAVY_ANNOTATIONS = {
+                    "kubectl.kubernetes.io/last-applied-configuration",
+                }
+                annotations = {
+                    k: v
+                    for k, v in metadata.get("annotations", {}).items()
+                    if k not in _HEAVY_ANNOTATIONS
+                }
                 try:
                     await titlis_client.send_scorecard_evaluated(
                         {
@@ -134,11 +142,10 @@ class ScorecardController(BaseController):
                             "workload_kind": ctx["resource_kind"],
                             "resource_version": metadata.get("resourceVersion"),
                             "labels": metadata.get("labels", {}),
-                            "annotations": metadata.get("annotations", {}),
+                            "annotations": annotations,
                             "dd_git_repository_url": self._extract_git_repository_url(
                                 body
                             ),
-                            "raw_metadata": metadata,
                             "pillar_scores": [
                                 {
                                     "pillar": ps.pillar.value.upper(),
