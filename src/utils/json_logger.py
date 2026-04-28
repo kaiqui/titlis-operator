@@ -93,8 +93,9 @@ def ensure_json_logging(level: int = logging.INFO) -> None:
         handler.setFormatter(JsonLogFormatter())
         root.addHandler(handler)
         logging.captureWarnings(True)
-        root.setLevel(level)
         _root_configured = True
+
+    root.setLevel(level)
 
 
 def setup_logger(name: str, level: str = "INFO") -> logging.Logger:

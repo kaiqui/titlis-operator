@@ -58,10 +58,15 @@ class ScorecardController(BaseController):
         try:
             if not self.scorecard_service:
                 return {"evaluated": False, "error": "ScorecardService não disponível"}
-            scorecard = self.scorecard_service.evaluate_resource(
-                ctx["resource_namespace"],
-                ctx["resource_name"],
-                ctx["resource_kind"],
+            svc = self.scorecard_service
+            loop = asyncio.get_event_loop()
+            scorecard = await loop.run_in_executor(
+                None,
+                lambda: svc.evaluate_resource(
+                    ctx["resource_namespace"],
+                    ctx["resource_name"],
+                    ctx["resource_kind"],
+                ),
             )
 
             self.logger.info(
