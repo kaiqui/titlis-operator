@@ -7,8 +7,6 @@ import os
 _FEATURE_ENV_VARS = {
     "ENABLE_SCORECARD_CONTROLLER": "true",
     "ENABLE_SLO_CONTROLLER": "true",
-    "ENABLE_CASTAI_MONITOR": "true",
-    "ENABLE_SYNTHETIC_MONITOR": "true",
 }
 for _key, _val in _FEATURE_ENV_VARS.items():
     os.environ[_key] = _val
@@ -25,8 +23,6 @@ def _ensure_settings_features_enabled():
     _prev = {
         "enable_scorecard_controller": settings.enable_scorecard_controller,
         "enable_slo_controller": settings.enable_slo_controller,
-        "enable_castai_monitor": settings.enable_castai_monitor,
-        "enable_synthetic_monitor": settings.enable_synthetic_monitor,
     }
     for attr in _prev:
         object.__setattr__(settings, attr, True)

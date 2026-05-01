@@ -40,7 +40,10 @@ async def test_send_always_includes_api_key_in_envelope():
     assert envelope["api_key"] == "tls_k_abc123def456789012345678901234567890ab"
     assert "tenant_id" not in envelope
     assert "ts" in envelope
-    assert captured["headers"]["X-Api-Key"] == "tls_k_abc123def456789012345678901234567890ab"
+    assert (
+        captured["headers"]["X-Api-Key"]
+        == "tls_k_abc123def456789012345678901234567890ab"
+    )
 
 
 @pytest.mark.asyncio

@@ -22,8 +22,9 @@ O **titlis-operator** é um Kubernetes Operator escrito em Python (Kopf) que aut
 - **Notificações Slack** — alerts e digests por namespace (rate-limited)
 - **Enriquecimento** — integra Backstage (ownership) e CAST AI (custo)
 
-O operator também envia todos os eventos para o **titlis-api** via UDP:8125, que persiste no
-PostgreSQL para o dashboard.
+O operator também envia todos os eventos para o **titlis-api** via HTTP POST em
+`/v1/operator/events` (autenticado por API key), que persiste no PostgreSQL para o dashboard.
+O nome da classe `TitlisApiUdpClient` é legado — o transporte atual é HTTP.
 
 > **Atenção — migração de responsabilidade:** A responsabilidade de abrir PRs de remediação
 > no GitHub **migrou para o `titlis-ai`**. O operator passou a ser exclusivamente um motor de
@@ -71,16 +72,17 @@ Ports / Interfaces (src/application/ports/)
        ↕
 Infrastructure Adapters (src/infrastructure/)
   ├── datadog/        DatadogRepository
-  ├── github/         GitHubRepository
   ├── slack/          SlackRepository
   ├── kubernetes/     AppScorecardWriter, RemediationWriter, K8sStatusWriter
   ├── backstage/      BackstageEnricher
   ├── castai/         CastaiCostEnricher
-  └── titlis_api/     TitlisApiUdpClient
+  └── titlis_api/     TitlisApiUdpClient (nome legado; usa HTTP internamente)
 
 Controllers (src/controllers/) — thin Kopf handlers
 Bootstrap (src/bootstrap/dependencies.py) — DI via @lru_cache
 ```
+
+**Nota:** GitHub foi removido do operator. PRs de remediação são responsabilidade do `titlis-ai`.
 
 **Regra:** Services nunca importam infrastructure diretamente — usam Ports (interfaces).
 
@@ -103,12 +105,10 @@ src/
 ├── application/
 │   ├── ports/
 │   │   ├── datadog_port.py
-│   │   ├── github_port.py
 │   │   ├── slack_port.py
 │   │   └── titlis_api_port.py
 │   └── services/
 │       ├── scorecard_service.py         # evaluate_resource() — 26+ regras
-│       ├── remediation_service.py       # create_remediation_pr()
 │       ├── slo_service.py               # reconcile_slo() — 3-path idempotency
 │       ├── slo_metrics_service.py       # Emissão de métricas de SLO
 │       ├── slack_service.py             # Rate-limited Slack dispatch
@@ -116,7 +116,6 @@ src/
 │       └── namespace_notification_buffer.py  # Digest de notificações por namespace
 ├── domain/
 │   ├── models.py                        # SLOConfigSpec, ResourceScorecard, Enums
-│   ├── github_models.py                 # RemediationRequest, PullRequestResult
 │   └── slack_models.py                  # NotificationSeverity, SlackNotification
 ├── infrastructure/
 │   ├── datadog/
@@ -124,9 +123,6 @@ src/
 │   │   ├── client.py                    # Low-level Datadog API wrapper
 │   │   ├── factory.py                   # Factory de managers
 │   │   └── managers/                    # SLO, metrics, synthetic_metrics, gauge_metric
-│   ├── github/
-│   │   ├── repository.py                # GitHubPort impl
-│   │   └── client.py                    # httpx async wrapper
 │   ├── slack/
 │   │   ├── repository.py                # SlackPort impl
 │   │   └── message_builder.py           # Formatação de mensagens
@@ -430,19 +426,9 @@ def get_slo_service() -> Optional[SLOService]:
 
 Auth: `DD_API_KEY` + `DD_APP_KEY`
 
-### GitHub
-| Operação | Finalidade |
-|---|---|
-| `branch_exists(owner, repo, branch)` | Evita criar branch duplicada |
-| `create_branch(...)` | Cria branch de remediação |
-| `get_file_content(owner, repo, path, ref)` | Lê `manifests/kubernetes/main/deploy.yaml` |
-| `commit_files(...)` | Commita deploy.yaml modificado |
-| `create_pull_request(...)` | Cria PR com descrição detalhada |
-| `find_open_remediation_pr(...)` | Detecta PR existente (idempotência cross-restart) |
-
-Auth: `GITHUB_TOKEN`
-
-Branch naming: `fix/auto-remediation-{namespace}-{deployment}-{timestamp}`
+### GitHub (REMOVIDO — responsabilidade do titlis-ai)
+> Toda integração com GitHub migrou para o `titlis-ai`. O operator nunca abre PRs.
+> GitHub token e base branch são configurados por tenant em `titlis_oltp.tenant_ai_config`.
 
 ### Slack
 - Rate limiting: 60/min e 360/hora por padrão
@@ -450,14 +436,23 @@ Branch naming: `fix/auto-remediation-{namespace}-{deployment}-{timestamp}`
 - Digests de namespace: flush a cada 15min ou 10+ apps
 - Auth: `SLACK_WEBHOOK_URL` (webhook) ou `SLACK_BOT_TOKEN` (bot API)
 
-### Titlis API (UDP)
+### Titlis API (HTTP — nome da classe é legado "UDP")
 ```python
-# Eventos enviados (fire-and-forget, falhas não bloqueiam reconciliação)
-await titlis_client.send_scorecard_evaluated(scorecard, workload_meta, tenant_id)
-await titlis_client.send_slo_reconciled(slo_config, result, tenant_id)
-await titlis_client.send_notification_log(severity, message, channel, tenant_id)
+# Eventos enviados via HTTP POST para /v1/operator/events (fire-and-forget)
+await titlis_client.send_scorecard_evaluated(payload)
+await titlis_client.send_slo_reconciled(payload)
+await titlis_client.send_notification_log(payload)
+await titlis_client.send_resource_metrics(payload)
 ```
-Habilitado por `TITLIS_API_ENABLED=true`. Host padrão: `titlis-api.titlis-system.svc.cluster.local`.
+Auth: header `X-Api-Key: <operator_api_key>`.
+Habilitado por `TITLIS_API_ENABLED=true`. Host padrão: `http://titlis-api.titlis-system.svc.cluster.local:8080`.
+
+O operator também faz polling de mudanças de SLO via:
+```python
+await titlis_client.get_pending_slo_changes()           # GET /v1/operator/pending-slo-changes
+await titlis_client.confirm_slo_change_applied(id)      # POST .../applied
+await titlis_client.confirm_slo_change_failed(id, err)  # POST .../failed
+```
 
 ---
 
@@ -503,9 +498,9 @@ DD_SERVICE=titlis-operator
 DD_GIT_REPOSITORY_URL=https://github.com/org/repo
 ```
 
-### GitHub (REMOVIDO — migrado para titlis-ai via tenant_ai_config)
-> As variáveis `GITHUB_*` e `REMEDIATION_*` foram removidas do operator.
-> GitHub token e base branch agora são configurados por tenant em `titlis_oltp.tenant_ai_config`.
+### GitHub
+> Variáveis `GITHUB_*` e `REMEDIATION_*` foram removidas do operator.
+> GitHub token e base branch são configurados por tenant em `titlis_oltp.tenant_ai_config`.
 
 ### Slack
 ```bash
@@ -527,9 +522,8 @@ SLACK_INCLUDE_CLUSTER_INFO=true
 ### Titlis API
 ```bash
 TITLIS_API_ENABLED=false
-TITLIS_API_HOST=titlis-api.titlis-system.svc.cluster.local
-TITLIS_API_UDP_PORT=8125
-TITLIS_API_HTTP_PORT=8080
+TITLIS_API_HTTP_BASE_URL=http://titlis-api.titlis-system.svc.cluster.local:8080
+TITLIS_API_API_KEY=tk_...             # API key gerada em /v1/settings/api-keys
 TITLIS_API_DEFAULT_TENANT_ID=1
 ```
 

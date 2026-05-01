@@ -19,6 +19,12 @@ async def slo_pending_changes_startup(**kwargs: Any) -> None:
             extra={"feature": "slo_pending_changes"},
         )
         return
+    if not settings.enable_slo_controller:
+        logger.info(
+            "SLO controller desabilitado — polling de pending SLO changes ignorado",
+            extra={"feature": "slo_pending_changes"},
+        )
+        return
 
     asyncio.create_task(_pending_changes_loop(), name="slo-pending-changes-loop")
 

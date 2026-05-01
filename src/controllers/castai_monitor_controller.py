@@ -1,7 +1,4 @@
 import asyncio
-from typing import Any
-
-import kopf
 
 from src.settings import settings
 from src.infrastructure.kubernetes.castai_health import CastAIHealthChecker
@@ -9,27 +6,6 @@ from src.infrastructure.datadog.managers.castai_metrics import CastAIMetricsMana
 from src.utils.json_logger import get_logger
 
 logger = get_logger("CastAIMonitorController")
-
-
-@kopf.on.startup()
-async def castai_monitor_startup(**kwargs: Any) -> None:
-    if not settings.enable_castai_monitor:
-        logger.info(
-            "CastAI Monitor desabilitado — startup ignorado",
-            extra={"feature": "castai_monitor"},
-        )
-        return
-
-    asyncio.create_task(_monitor_loop(), name="castai-monitor-loop")
-
-    logger.info(
-        "CastAI Monitor loop iniciado",
-        extra={
-            "cluster_name": settings.castai_cluster_name,
-            "namespace": settings.castai_monitor_namespace,
-            "interval_seconds": settings.castai_monitor_interval_seconds,
-        },
-    )
 
 
 async def _monitor_loop() -> None:
@@ -115,35 +91,3 @@ async def run_castai_health_check() -> None:
             "unhealthy": [r.service for r in results if not r.is_healthy],
         },
     )
-
-
-def register_castai_monitor() -> bool:
-    if not settings.enable_castai_monitor:
-        logger.info(
-            "CastAI Monitor desabilitado (ENABLE_CASTAI_MONITOR=false)",
-            extra={"feature": "castai_monitor"},
-        )
-        return False
-
-    if not settings.castai_cluster_name:
-        logger.warning(
-            "CASTAI_CLUSTER_NAME não definido — as métricas não serão enviadas até configurar.",
-            extra={"feature": "castai_monitor"},
-        )
-
-    if not settings.datadog_api_key:
-        logger.warning(
-            "DD_API_KEY não definida — as métricas não serão enviadas.",
-            extra={"feature": "castai_monitor"},
-        )
-
-    logger.info(
-        "CastAI Monitor habilitado",
-        extra={
-            "feature": "castai_monitor",
-            "cluster_name": settings.castai_cluster_name,
-            "namespace": settings.castai_monitor_namespace,
-            "interval_seconds": settings.castai_monitor_interval_seconds,
-        },
-    )
-    return True

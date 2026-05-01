@@ -12,6 +12,8 @@ class TitlisApiSettings(BaseSettings):
     udp_port: int = Field(default=8125)
     http_port: int = Field(default=8080)
     scheme: str = Field(default="http")
+    http_timeout_seconds: float = Field(default=10.0)
+    connect_timeout_seconds: float = Field(default=3.0)
     api_key: Optional[SecretStr] = Field(default=None)
 
     @model_validator(mode="after")
@@ -140,9 +142,6 @@ class Settings(BaseSettings):
         default=True, validation_alias="ENABLE_SLO_CONTROLLER"
     )
 
-    enable_castai_monitor: bool = Field(
-        default=False, validation_alias="ENABLE_CASTAI_MONITOR"
-    )
     castai_monitor_namespace: str = Field(
         default="castai-agent", validation_alias="CASTAI_MONITOR_NAMESPACE"
     )
@@ -153,9 +152,6 @@ class Settings(BaseSettings):
         default="develop", validation_alias="CASTAI_CLUSTER_NAME"
     )
 
-    enable_synthetic_monitor: bool = Field(
-        default=False, validation_alias="ENABLE_SYNTHETIC_MONITOR"
-    )
     synthetic_monitor_name: str = Field(
         default="jeitto-homepage", validation_alias="SYNTHETIC_MONITOR_NAME"
     )

@@ -272,6 +272,58 @@ class TestApplyPendingChanges:
         mock_client.confirm_slo_change_applied.assert_called_once_with("c-ok")
 
 
+class TestPendingChangesStartup:
+    @pytest.mark.asyncio
+    async def test_skips_when_titlis_api_is_disabled(self):
+        from src.controllers import slo_pending_changes_controller as controller
+
+        with (
+            patch.object(controller.settings.titlis_api, "enabled", False),
+            patch.object(controller.settings, "enable_slo_controller", True),
+            patch(
+                "src.controllers.slo_pending_changes_controller.asyncio.create_task"
+            ) as create_task,
+        ):
+            await controller.slo_pending_changes_startup()
+
+        create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_skips_when_slo_controller_is_disabled(self):
+        from src.controllers import slo_pending_changes_controller as controller
+
+        with (
+            patch.object(controller.settings.titlis_api, "enabled", True),
+            patch.object(controller.settings, "enable_slo_controller", False),
+            patch(
+                "src.controllers.slo_pending_changes_controller.asyncio.create_task"
+            ) as create_task,
+        ):
+            await controller.slo_pending_changes_startup()
+
+        create_task.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_starts_loop_when_both_flags_are_enabled(self):
+        from src.controllers import slo_pending_changes_controller as controller
+
+        def _close_task(coro, name=None):
+            coro.close()
+            return Mock()
+
+        with (
+            patch.object(controller.settings.titlis_api, "enabled", True),
+            patch.object(controller.settings, "enable_slo_controller", True),
+            patch(
+                "src.controllers.slo_pending_changes_controller.asyncio.create_task",
+                side_effect=_close_task,
+            ) as create_task,
+        ):
+            await controller.slo_pending_changes_startup()
+
+        create_task.assert_called_once()
+
+
 class TestPendingChangesApi:
     @pytest.mark.asyncio
     async def test_get_pending_slo_changes_parses_response(self):

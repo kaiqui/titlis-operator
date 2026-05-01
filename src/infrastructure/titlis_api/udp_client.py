@@ -21,9 +21,17 @@ class TitlisApiUdpClient(TitlisApiPort):
         udp_port: int,
         http_base_url: str,
         api_key: str,
+        request_timeout_seconds: float = 10.0,
+        connect_timeout_seconds: float = 3.0,
     ):
         self._http_base_url = http_base_url
         self._api_key = api_key
+        self._request_timeout_seconds = request_timeout_seconds
+        self._connect_timeout_seconds = connect_timeout_seconds
+        self._timeout = httpx.Timeout(
+            timeout=request_timeout_seconds,
+            connect=connect_timeout_seconds,
+        )
 
     async def _send_http(self, event_type: str, data: dict) -> None:
         envelope = {
@@ -33,10 +41,23 @@ class TitlisApiUdpClient(TitlisApiPort):
             "api_key": self._api_key,
             "data": data,
         }
+        url = f"{self._http_base_url}/v1/operator/events"
+        payload_bytes = len(json.dumps(envelope, default=str))
+        started_at = time.perf_counter()
+        logger.info(
+            "titlis_api_http_send_started",
+            extra={
+                "event": event_type,
+                "url": url,
+                "bytes": payload_bytes,
+                "request_timeout_seconds": self._request_timeout_seconds,
+                "connect_timeout_seconds": self._connect_timeout_seconds,
+            },
+        )
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
-                    f"{self._http_base_url}/v1/operator/events",
+                    url,
                     json=envelope,
                     headers={"X-Api-Key": self._api_key},
                 )
@@ -45,13 +66,58 @@ class TitlisApiUdpClient(TitlisApiPort):
                 "http_evento_enviado",
                 extra={
                     "event": event_type,
-                    "bytes": len(json.dumps(envelope, default=str)),
+                    "url": url,
+                    "bytes": payload_bytes,
+                    "status_code": resp.status_code,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                },
+            )
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "titlis_api_http_send_timeout",
+                extra={
+                    "event": event_type,
+                    "url": url,
+                    "bytes": payload_bytes,
+                    "request_timeout_seconds": self._request_timeout_seconds,
+                    "connect_timeout_seconds": self._connect_timeout_seconds,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
+                },
+            )
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "titlis_api_http_send_bad_status",
+                extra={
+                    "event": event_type,
+                    "url": url,
+                    "bytes": payload_bytes,
+                    "status_code": exc.response.status_code,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
+                },
+            )
+        except httpx.RequestError as exc:
+            logger.warning(
+                "titlis_api_http_send_request_error",
+                extra={
+                    "event": event_type,
+                    "url": url,
+                    "bytes": payload_bytes,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
                 },
             )
         except Exception as exc:
             logger.warning(
                 "titlis_api_http_send_failed",
-                extra={"event": event_type, "error": repr(exc)},
+                extra={
+                    "event": event_type,
+                    "url": url,
+                    "bytes": payload_bytes,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
+                },
             )
 
     async def send_scorecard_evaluated(self, payload: dict) -> None:
@@ -71,7 +137,7 @@ class TitlisApiUdpClient(TitlisApiPort):
 
     async def get_remediation(self, workload_id: str) -> Optional[RemediationState]:
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(
                     f"{self._http_base_url}/v1/workloads/{workload_id}/remediation"
                 )
@@ -93,10 +159,12 @@ class TitlisApiUdpClient(TitlisApiPort):
             return None
 
     async def get_pending_slo_changes(self) -> List[SLOPendingChange]:
+        url = f"{self._http_base_url}/v1/operator/pending-slo-changes"
+        started_at = time.perf_counter()
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.get(
-                    f"{self._http_base_url}/v1/operator/pending-slo-changes",
+                    url,
                     headers={"X-Api-Key": self._api_key},
                 )
                 if resp.status_code == 404:
@@ -116,16 +184,31 @@ class TitlisApiUdpClient(TitlisApiPort):
                     )
                     for item in items
                 ]
+        except httpx.TimeoutException as exc:
+            logger.warning(
+                "titlis_api_get_pending_slo_changes_timeout",
+                extra={
+                    "url": url,
+                    "request_timeout_seconds": self._request_timeout_seconds,
+                    "connect_timeout_seconds": self._connect_timeout_seconds,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
+                },
+            )
         except Exception as exc:
             logger.warning(
                 "titlis_api_get_pending_slo_changes_failed",
-                extra={"error": repr(exc)},
+                extra={
+                    "url": url,
+                    "elapsed_ms": round((time.perf_counter() - started_at) * 1000, 2),
+                    "error": repr(exc),
+                },
             )
             return []
 
     async def confirm_slo_change_applied(self, change_id: str) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
                     f"{self._http_base_url}/v1/operator/pending-slo-changes/{change_id}/applied",
                     headers={"X-Api-Key": self._api_key},
@@ -141,7 +224,7 @@ class TitlisApiUdpClient(TitlisApiPort):
 
     async def confirm_slo_change_failed(self, change_id: str, error: str) -> bool:
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            async with httpx.AsyncClient(timeout=self._timeout) as client:
                 resp = await client.post(
                     f"{self._http_base_url}/v1/operator/pending-slo-changes/{change_id}/failed",
                     headers={"X-Api-Key": self._api_key},

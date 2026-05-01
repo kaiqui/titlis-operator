@@ -40,6 +40,8 @@ def get_titlis_api_client() -> Any:
         udp_port=settings.titlis_api.udp_port,
         http_base_url=settings.titlis_api.http_base_url,
         api_key=settings.titlis_api.api_key.get_secret_value(),
+        request_timeout_seconds=settings.titlis_api.http_timeout_seconds,
+        connect_timeout_seconds=settings.titlis_api.connect_timeout_seconds,
     )
 
 

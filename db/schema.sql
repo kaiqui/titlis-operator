@@ -1182,7 +1182,7 @@ CREATE TABLE IF NOT EXISTS titlis_oltp.tenant_ai_configs (
     is_active              BOOLEAN       NOT NULL DEFAULT true,
     created_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
     updated_at             TIMESTAMPTZ   NOT NULL DEFAULT now(),
-    CONSTRAINT chk_ai_provider CHECK (provider IN ('openai','anthropic','google','mistral','cohere','azure','ollama'))
+    CONSTRAINT chk_ai_provider CHECK (provider IN ('openai','anthropic','google','gemini','mistral','cohere','azure','ollama'))
 );
 
 COMMENT ON TABLE  titlis_oltp.tenant_ai_configs                IS 'Configuração de provider/model de IA por tenant';

@@ -8,8 +8,6 @@ from src.bootstrap.dependencies import init_logging
 init_logging()
 
 from src.settings import settings
-from src.controllers.castai_monitor_controller import register_castai_monitor
-from src.controllers.synthetic_monitor_controller import register_synthetic_monitor
 from src.bootstrap.dependencies import (
     get_datadog_repository,
     get_slo_service,
@@ -36,7 +34,6 @@ def startup(settings_: "kopf.OperatorSettings | None" = None, **kwargs: Any) -> 
                     "slack_notifications": settings.slack.enabled,
                     "scorecard_controller": settings.enable_scorecard_controller,
                     "slo_controller": settings.enable_slo_controller,
-                    "synthetic_monitor": settings.enable_synthetic_monitor,
                 },
             },
         )
@@ -133,7 +130,7 @@ async def cleanup(**kwargs: Any) -> None:
     logger.info("Titlis Operator finalizado")
 
 
-if settings.titlis_api.enabled:
+if settings.titlis_api.enabled and settings.enable_slo_controller:
     logger.info("Registrando SLO Pending Changes Controller")
     import src.controllers.slo_pending_changes_controller  # noqa: F401
 
@@ -144,13 +141,3 @@ if settings.enable_slo_controller:
 if settings.enable_scorecard_controller:
     logger.info("Registrando Scorecard Controller")
     from src.controllers import scorecard_controller
-
-if settings.enable_castai_monitor:
-    logger.info("Registrando CAST AI Monitor Controller")
-    register_castai_monitor()
-    import src.controllers.castai_monitor_controller
-
-if settings.enable_synthetic_monitor:
-    logger.info("Registrando Synthetic Monitor Controller")
-    register_synthetic_monitor()
-    import src.controllers.synthetic_monitor_controller

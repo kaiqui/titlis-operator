@@ -3,6 +3,12 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
+from src.infrastructure.synthetic.check_config import (
+    JsonValueCheckConfig,
+    SiteHealthCheckConfig,
+    SyntheticChecksConfig,
+)
+
 
 class TestSyntheticSiteHealthChecker:
     def test_check_returns_healthy_on_http_200(self):
@@ -99,99 +105,327 @@ class TestSyntheticSiteMetricsManager:
         assert payload.series[1].metric == manager.LATENCY_METRIC_NAME
 
 
-class TestSyntheticMonitorController:
-    def test_skips_when_no_target_url(self):
-        with patch(
-            "src.controllers.synthetic_monitor_controller.settings"
-        ) as mock_settings:
-            mock_settings.synthetic_monitor_name = "jeitto-homepage"
-            mock_settings.synthetic_monitor_url = ""
-            mock_settings.synthetic_monitor_timeout_seconds = 5.0
+class TestRunSiteHealthCheck:
+    def _make_check(self, **kwargs) -> SiteHealthCheckConfig:
+        return SiteHealthCheckConfig(
+            name="my-api",
+            url="https://api.example.com/health",
+            interval_seconds=60,
+            **kwargs,
+        )
 
-            from src.controllers.synthetic_monitor_controller import (
-                run_synthetic_site_check,
-            )
-
-            run_synthetic_site_check()
-
-    def test_full_cycle_healthy(self):
-        mock_result = MagicMock()
-        mock_result.is_healthy = True
-        mock_result.status_code = 200
-        mock_result.response_time_ms = 98.2
-        mock_result.reason = "HTTP 200"
-        mock_result.to_dict.return_value = {
-            "monitor_name": "jeitto-homepage",
-            "target_url": "https://jeitto.com.br",
-            "target_host": "jeitto.com.br",
-            "is_healthy": True,
-            "response_time_ms": 98.2,
-            "status_code": 200,
-            "reason": "HTTP 200",
-            "checked_at": 1234567890,
-        }
+    def test_sends_metrics_on_healthy_result(self):
+        check = self._make_check()
+        mock_result = MagicMock(
+            is_healthy=True,
+            status_code=200,
+            response_time_ms=45.0,
+        )
+        mock_result.to_dict.return_value = {"is_healthy": True}
 
         with (
-            patch(
-                "src.controllers.synthetic_monitor_controller.settings"
-            ) as mock_settings,
             patch(
                 "src.controllers.synthetic_monitor_controller.SyntheticSiteHealthChecker"
             ) as mock_checker_cls,
             patch(
                 "src.controllers.synthetic_monitor_controller.SyntheticSiteMetricsManager"
-            ) as mock_metrics_cls,
+            ) as mock_manager_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
         ):
-            mock_settings.synthetic_monitor_name = "jeitto-homepage"
-            mock_settings.synthetic_monitor_url = "https://jeitto.com.br"
-            mock_settings.synthetic_monitor_timeout_seconds = 5.0
             mock_settings.datadog_api_key = "fake-key"
             mock_settings.datadog_app_key = None
             mock_settings.datadog_site = "datadoghq.com"
-
-            mock_checker_cls.return_value.check = MagicMock(return_value=mock_result)
-            mock_metrics_instance = MagicMock()
-            mock_metrics_cls.return_value = mock_metrics_instance
+            mock_checker_cls.return_value.check.return_value = mock_result
+            mock_manager = MagicMock()
+            mock_manager_cls.return_value = mock_manager
 
             from src.controllers.synthetic_monitor_controller import (
-                run_synthetic_site_check,
+                _run_site_health_check,
             )
 
-            run_synthetic_site_check()
+            _run_site_health_check(check)
 
-            mock_metrics_instance.send_check_result.assert_called_once_with(
-                mock_result.to_dict.return_value
-            )
+            mock_manager.send_check_result.assert_called_once()
 
     def test_skips_metrics_when_no_api_key(self):
-        mock_result = MagicMock()
-        mock_result.is_healthy = False
-        mock_result.status_code = 503
-        mock_result.response_time_ms = 250.0
-        mock_result.reason = "HTTP 503"
+        check = self._make_check()
+        mock_result = MagicMock(is_healthy=False, status_code=503)
+        mock_result.to_dict.return_value = {}
 
         with (
-            patch(
-                "src.controllers.synthetic_monitor_controller.settings"
-            ) as mock_settings,
             patch(
                 "src.controllers.synthetic_monitor_controller.SyntheticSiteHealthChecker"
             ) as mock_checker_cls,
             patch(
                 "src.controllers.synthetic_monitor_controller.SyntheticSiteMetricsManager"
-            ) as mock_metrics_cls,
+            ) as mock_manager_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
         ):
-            mock_settings.synthetic_monitor_name = "jeitto-homepage"
-            mock_settings.synthetic_monitor_url = "https://jeitto.com.br"
-            mock_settings.synthetic_monitor_timeout_seconds = 5.0
             mock_settings.datadog_api_key = None
-
-            mock_checker_cls.return_value.check = MagicMock(return_value=mock_result)
+            mock_checker_cls.return_value.check.return_value = mock_result
 
             from src.controllers.synthetic_monitor_controller import (
-                run_synthetic_site_check,
+                _run_site_health_check,
             )
 
-            run_synthetic_site_check()
+            _run_site_health_check(check)
 
-            mock_metrics_cls.assert_not_called()
+            mock_manager_cls.assert_not_called()
+
+    def test_logs_exception_on_datadog_send_failure(self):
+        check = self._make_check()
+        mock_result = MagicMock(is_healthy=True, status_code=200, response_time_ms=10.0)
+        mock_result.to_dict.return_value = {}
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.SyntheticSiteHealthChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.SyntheticSiteMetricsManager"
+            ) as mock_manager_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
+        ):
+            mock_settings.datadog_api_key = "fake-key"
+            mock_settings.datadog_app_key = None
+            mock_settings.datadog_site = "datadoghq.com"
+            mock_checker_cls.return_value.check.return_value = mock_result
+            mock_manager_cls.return_value.send_check_result.side_effect = RuntimeError(
+                "network error"
+            )
+
+            from src.controllers.synthetic_monitor_controller import (
+                _run_site_health_check,
+            )
+
+            _run_site_health_check(check)  # deve logar e não propagar
+
+
+class TestRunJsonValueCheck:
+    def _make_check(self, **kwargs) -> JsonValueCheckConfig:
+        return JsonValueCheckConfig(
+            name="saldo",
+            url="https://api.carteira.internal/v1/balance",
+            interval_seconds=120,
+            json_path="balance",
+            metric_name="carteira.saldo",
+            **kwargs,
+        )
+
+    def test_sends_gauge_on_successful_check(self):
+        check = self._make_check()
+        mock_result = MagicMock(success=True, value=1200.0, reason="ok", checked_at=0)
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.JsonValueChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.GaugeMetricSender"
+            ) as mock_sender_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
+        ):
+            mock_settings.datadog_api_key = "fake-key"
+            mock_settings.datadog_app_key = None
+            mock_settings.datadog_site = "datadoghq.com"
+            mock_checker_cls.return_value.check.return_value = mock_result
+            mock_sender = MagicMock()
+            mock_sender_cls.return_value = mock_sender
+
+            from src.controllers.synthetic_monitor_controller import (
+                _run_json_value_check,
+            )
+
+            _run_json_value_check(check)
+
+            mock_sender.send.assert_called_once()
+            call_kwargs = mock_sender.send.call_args.kwargs
+            assert call_kwargs["metric_name"] == "carteira.saldo"
+            assert call_kwargs["value"] == 1200.0
+
+    def test_skips_gauge_when_no_api_key(self):
+        check = self._make_check()
+        mock_result = MagicMock(success=True, value=42.0)
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.JsonValueChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.GaugeMetricSender"
+            ) as mock_sender_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
+        ):
+            mock_settings.datadog_api_key = None
+            mock_checker_cls.return_value.check.return_value = mock_result
+
+            from src.controllers.synthetic_monitor_controller import (
+                _run_json_value_check,
+            )
+
+            _run_json_value_check(check)
+
+            mock_sender_cls.assert_not_called()
+
+    def test_skips_gauge_when_check_fails(self):
+        check = self._make_check()
+        mock_result = MagicMock(success=False, value=None, reason="HTTP 500")
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.JsonValueChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.GaugeMetricSender"
+            ) as mock_sender_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
+        ):
+            mock_settings.datadog_api_key = "fake-key"
+            mock_settings.datadog_app_key = None
+            mock_settings.datadog_site = "datadoghq.com"
+            mock_checker_cls.return_value.check.return_value = mock_result
+
+            from src.controllers.synthetic_monitor_controller import (
+                _run_json_value_check,
+            )
+
+            _run_json_value_check(check)
+
+            mock_sender_cls.assert_not_called()
+
+    def test_skips_gauge_when_value_is_none(self):
+        check = self._make_check()
+        mock_result = MagicMock(success=True, value=None, reason="path not found")
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.JsonValueChecker"
+            ) as mock_checker_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.GaugeMetricSender"
+            ) as mock_sender_cls,
+            patch(
+                "src.controllers.synthetic_monitor_controller.settings"
+            ) as mock_settings,
+        ):
+            mock_settings.datadog_api_key = "fake-key"
+            mock_settings.datadog_app_key = None
+            mock_settings.datadog_site = "datadoghq.com"
+            mock_checker_cls.return_value.check.return_value = mock_result
+
+            from src.controllers.synthetic_monitor_controller import (
+                _run_json_value_check,
+            )
+
+            _run_json_value_check(check)
+
+            mock_sender_cls.assert_not_called()
+
+
+class TestCheckLoop:
+    def test_dispatches_site_health_check(self):
+        check = SiteHealthCheckConfig(
+            name="test", url="http://example.com", interval_seconds=60
+        )
+
+        sleep_calls = [0]
+
+        def mock_sleep(n):
+            sleep_calls[0] += 1
+            if sleep_calls[0] >= 2:
+                raise SystemExit(0)
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.time.sleep",
+                side_effect=mock_sleep,
+            ),
+            patch(
+                "src.controllers.synthetic_monitor_controller._run_site_health_check"
+            ) as mock_run,
+        ):
+            from src.controllers.synthetic_monitor_controller import _check_loop
+
+            with pytest.raises(SystemExit):
+                _check_loop(check)
+
+            mock_run.assert_called_once_with(check)
+
+    def test_dispatches_json_value_check(self):
+        check = JsonValueCheckConfig(
+            name="gauge",
+            url="http://example.com/data",
+            interval_seconds=120,
+            json_path="value",
+            metric_name="my.metric",
+        )
+
+        sleep_calls = [0]
+
+        def mock_sleep(n):
+            sleep_calls[0] += 1
+            if sleep_calls[0] >= 2:
+                raise SystemExit(0)
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.time.sleep",
+                side_effect=mock_sleep,
+            ),
+            patch(
+                "src.controllers.synthetic_monitor_controller._run_json_value_check"
+            ) as mock_run,
+        ):
+            from src.controllers.synthetic_monitor_controller import _check_loop
+
+            with pytest.raises(SystemExit):
+                _check_loop(check)
+
+            mock_run.assert_called_once_with(check)
+
+    def test_continues_after_exception(self):
+        check = SiteHealthCheckConfig(
+            name="test", url="http://example.com", interval_seconds=60
+        )
+
+        run_calls = [0]
+
+        def mock_run(c):
+            run_calls[0] += 1
+            raise ValueError("check failed")
+
+        sleep_calls = [0]
+
+        def mock_sleep(n):
+            sleep_calls[0] += 1
+            if sleep_calls[0] >= 3:
+                raise SystemExit(0)
+
+        with (
+            patch(
+                "src.controllers.synthetic_monitor_controller.time.sleep",
+                side_effect=mock_sleep,
+            ),
+            patch(
+                "src.controllers.synthetic_monitor_controller._run_site_health_check",
+                side_effect=mock_run,
+            ),
+        ):
+            from src.controllers.synthetic_monitor_controller import _check_loop
+
+            with pytest.raises(SystemExit):
+                _check_loop(check)
+
+        assert run_calls[0] == 2

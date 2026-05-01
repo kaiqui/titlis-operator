@@ -54,6 +54,8 @@ class TestSettings:
         assert s.enabled is True
         assert s.api_key is not None
         assert s.api_key.get_secret_value() == "tls_k_abc123"
+        assert s.http_timeout_seconds == 10.0
+        assert s.connect_timeout_seconds == 3.0
 
     @patch.dict("os.environ", {"TITLIS_API_ENABLED": "true"})
     def test_titlis_api_fails_fast_when_enabled_without_key(self):

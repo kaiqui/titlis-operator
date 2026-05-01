@@ -17,4 +17,4 @@ ENV PYTHONPATH=/app
 RUN useradd -m -u 1000 titlis && chown -R titlis:titlis /app
 USER titlis
 
-ENTRYPOINT ["kopf", "run", "--standalone", "--all-namespaces", "--liveness=http://0.0.0.0:8080/healthz", "-m", "src.main"]
+CMD ["kopf", "run", "--standalone", "--all-namespaces", "--liveness=http://0.0.0.0:8080/healthz", "-m", "src.main"]
